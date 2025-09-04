@@ -1,0 +1,187 @@
+{
+  "accounts": [
+    {
+      "name": "Main Checking Account",
+      "account_type": "checking",
+      "balance": 2500.00,
+      "description": "Primary bank account for daily expenses"
+    },
+    {
+      "name": "Savings Account",
+      "account_type": "savings",
+      "balance": 15000.00,
+      "description": "Emergency fund and long-term savings"
+    },
+    {
+      "name": "Credit Card",
+      "account_type": "credit",
+      "balance": -500.00,
+      "description": "Primary credit card for purchases",
+      "credit_limit": 10000.00,
+      "due_date": 15,
+      "billing_cycle_start": 1
+    },
+    {
+      "name": "Cash Wallet",
+      "account_type": "cash",
+      "balance": 200.00,
+      "description": "Physical cash for small purchases"
+    },
+    {
+      "name": "PayPal",
+      "account_type": "e_wallet",
+      "balance": 150.00,
+      "description": "Digital wallet for online transactions"
+    }
+  ],
+  "categories": [
+    {
+      "name": "Food & Dining",
+      "description": "Restaurants, groceries, and food delivery",
+      "color": "#FF6B6B",
+      "is_expense": true
+    },
+    {
+      "name": "Transportation",
+      "description": "Gas, public transit, and car maintenance",
+      "color": "#4ECDC4",
+      "is_expense": true
+    },
+    {
+      "name": "Entertainment",
+      "description": "Movies, games, and leisure activities",
+      "color": "#45B7D1",
+      "is_expense": true
+    },
+    {
+      "name": "Utilities",
+      "description": "Electricity, water, internet, and phone bills",
+      "color": "#96CEB4",
+      "is_expense": true
+    },
+    {
+      "name": "Shopping",
+      "description": "Clothing, electronics, and general purchases",
+      "color": "#FFEAA7",
+      "is_expense": true
+    },
+    {
+      "name": "Healthcare",
+      "description": "Medical expenses, prescriptions, and insurance",
+      "color": "#FF8A80",
+      "is_expense": true
+    },
+    {
+      "name": "Housing",
+      "description": "Rent, mortgage, and home maintenance",
+      "color": "#A8E6CF",
+      "is_expense": true
+    },
+    {
+      "name": "Education",
+      "description": "Tuition, books, and educational expenses",
+      "color": "#FFB347",
+      "is_expense": true
+    },
+    {
+      "name": "Salary",
+      "description": "Regular employment income",
+      "color": "#DDA0DD",
+      "is_expense": false
+    },
+    {
+      "name": "Freelance",
+      "description": "Freelance and contract work income",
+      "color": "#98D8C8",
+      "is_expense": false
+    },
+    {
+      "name": "Investment Income",
+      "description": "Dividends, interest, and investment returns",
+      "color": "#F7DC6F",
+      "is_expense": false
+    },
+    {
+      "name": "Gifts",
+      "description": "Gifts received from others",
+      "color": "#BB8FCE",
+      "is_expense": false
+    }
+  ],
+  "allocations": [
+    {
+      "account_id": 2,
+      "name": "Emergency Fund",
+      "allocation_type": "savings",
+      "description": "6-month emergency fund",
+      "target_amount": 30000.00,
+      "current_amount": 15000.00,
+      "monthly_target": 1000.00
+    },
+    {
+      "account_id": 1,
+      "name": "Monthly Budget",
+      "allocation_type": "budget",
+      "description": "Monthly spending budget",
+      "target_amount": 3000.00,
+      "current_amount": 0.00,
+      "monthly_target": 3000.00
+    },
+    {
+      "account_id": 2,
+      "name": "Vacation Fund",
+      "allocation_type": "goal",
+      "description": "Save for annual vacation",
+      "target_amount": 5000.00,
+      "current_amount": 2000.00,
+      "monthly_target": 300.00,
+      "target_date": "2024-12-31T00:00:00"
+    }
+  ],
+  "transactions": [
+    {
+      "account_id": 1,
+      "category_id": 1,
+      "allocation_id": 2,
+      "amount": 45.50,
+      "description": "Grocery shopping at Whole Foods",
+      "transaction_type": "debit",
+      "transaction_date": "2024-01-15T10:30:00"
+    },
+    {
+      "account_id": 1,
+      "category_id": 2,
+      "allocation_id": 2,
+      "amount": 35.00,
+      "description": "Gas station fill-up",
+      "transaction_type": "debit",
+      "transaction_date": "2024-01-14T16:45:00"
+    },
+    {
+      "account_id": 1,
+      "category_id": 9,
+      "amount": 3000.00,
+      "description": "Monthly salary deposit",
+      "transaction_type": "credit",
+      "transaction_date": "2024-01-15T09:00:00"
+    },
+    {
+      "account_id": 3,
+      "category_id": 5,
+      "amount": 150.00,
+      "description": "Online purchase - Amazon",
+      "transaction_type": "debit",
+      "transaction_date": "2024-01-13T14:20:00",
+      "posting_date": "2024-01-14T00:00:00"
+    },
+    {
+      "account_id": 2,
+      "category_id": 9,
+      "allocation_id": 1,
+      "amount": 1000.00,
+      "description": "Transfer to emergency fund",
+      "transaction_type": "credit",
+      "transaction_date": "2024-01-10T12:00:00"
+    }
+  ]
+}
