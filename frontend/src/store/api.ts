@@ -111,15 +111,41 @@ export interface GoalsSummary {
   }>
 }
 
+// Custom baseQuery with auth token and debug logging
+const baseQueryWithAuth = async (args: any, api: any, extraOptions: any) => {
+  const token = localStorage.getItem('access_token')
+  
+  console.log('API Request:', args)
+  const result = await fetchBaseQuery({
+    baseUrl: '/api/v1',
+    prepareHeaders: (headers) => {
+      if (token) {
+        headers.set('authorization', `Bearer ${token}`)
+      }
+      return headers
+    },
+  })(args, api, extraOptions)
+  console.log('API Response:', result)
+  
+  // If we get a 401, clear the token and redirect to login
+  if (result.error && 'status' in result.error && result.error.status === 401) {
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('user')
+    window.location.href = '/login'
+  }
+  
+  return result
+}
+
 export const accountingApi = createApi({
   reducerPath: 'accountingApi',
-  baseQuery: fetchBaseQuery({ baseUrl: '/api/v1' }),
+  baseQuery: baseQueryWithAuth,
   tagTypes: ['Account', 'Category', 'Transaction', 'Allocation'],
   endpoints: (builder) => ({
     // Accounts
     getAccounts: builder.query<Account[], { account_type?: string; is_active?: boolean }>({
       query: (params) => ({
-        url: 'accounts',
+        url: 'accounts/',
         params
       }),
       providesTags: ['Account'],
@@ -130,7 +156,7 @@ export const accountingApi = createApi({
     }),
     createAccount: builder.mutation<Account, Partial<Account>>({
       query: (account) => ({
-        url: 'accounts',
+        url: 'accounts/',
         method: 'POST',
         body: account,
       }),
@@ -159,7 +185,7 @@ export const accountingApi = createApi({
     // Categories
     getCategories: builder.query<Category[], { is_expense?: boolean; is_active?: boolean }>({
       query: (params) => ({
-        url: 'categories',
+        url: 'categories/',
         params
       }),
       providesTags: ['Category'],
@@ -170,7 +196,7 @@ export const accountingApi = createApi({
     }),
     createCategory: builder.mutation<Category, Partial<Category>>({
       query: (category) => ({
-        url: 'categories',
+        url: 'categories/',
         method: 'POST',
         body: category,
       }),
@@ -195,7 +221,7 @@ export const accountingApi = createApi({
     // Allocations
     getAllocations: builder.query<Allocation[], { account_id?: number; allocation_type?: string; is_active?: boolean }>({
       query: (params) => ({
-        url: 'allocations',
+        url: 'allocations/',
         params
       }),
       providesTags: ['Allocation'],
@@ -206,7 +232,7 @@ export const accountingApi = createApi({
     }),
     createAllocation: builder.mutation<Allocation, Partial<Allocation>>({
       query: (allocation) => ({
-        url: 'allocations',
+        url: 'allocations/',
         method: 'POST',
         body: allocation,
       }),
@@ -247,7 +273,7 @@ export const accountingApi = createApi({
       is_reconciled?: boolean;
     }>({
       query: (params) => ({
-        url: 'transactions',
+        url: 'transactions/',
         params
       }),
       providesTags: ['Transaction'],
@@ -258,7 +284,7 @@ export const accountingApi = createApi({
     }),
     createTransaction: builder.mutation<Transaction, Partial<Transaction>>({
       query: (transaction) => ({
-        url: 'transactions',
+        url: 'transactions/',
         method: 'POST',
         body: transaction,
       }),

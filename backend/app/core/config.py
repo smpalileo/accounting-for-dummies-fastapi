@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     DESCRIPTION: str = "A comprehensive accounting management system"
     API_V1_STR: str = "/api/v1"
     
-    # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    # CORS - will be parsed from comma-separated string
+    BACKEND_CORS_ORIGINS_STR: str = "http://localhost:3000,http://localhost:8000"
     
     # Database - PostgreSQL
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/accounting_db"
@@ -21,11 +21,19 @@ class Settings(BaseSettings):
     # File Upload
     UPLOAD_DIR: str = "uploads"
     MAX_FILE_SIZE: int = 10 * 1024 * 1024  # 10MB
-    ALLOWED_EXTENSIONS: List[str] = ["jpg", "jpeg", "png", "pdf", "doc", "docx"]
+    ALLOWED_EXTENSIONS_STR: str = "jpg,jpeg,png,pdf,doc,docx"
     
     # Environment
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
+    
+    @property
+    def BACKEND_CORS_ORIGINS(self) -> List[str]:
+        return [origin.strip() for origin in self.BACKEND_CORS_ORIGINS_STR.split(",")]
+    
+    @property
+    def ALLOWED_EXTENSIONS(self) -> List[str]:
+        return [ext.strip() for ext in self.ALLOWED_EXTENSIONS_STR.split(",")]
     
     class Config:
         env_file = ".env"

@@ -1,4 +1,6 @@
 # Database models
+from sqlalchemy.orm import relationship
+from app.models.user import User, CurrencyType
 from app.models.account import Account, AccountType
 from app.models.transaction import Transaction, TransactionType
 from app.models.category import Category

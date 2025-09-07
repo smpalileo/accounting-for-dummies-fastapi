@@ -6,7 +6,7 @@ from app.models.account import AccountType
 class AccountBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     account_type: AccountType
-    balance: float = Field(default=0.0, ge=0)
+    balance: float = Field(default=0.0)  # Allow negative balances for credit cards
     description: Optional[str] = None
     
     # Credit card specific fields
@@ -20,7 +20,7 @@ class AccountCreate(AccountBase):
 class AccountUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     account_type: Optional[AccountType] = None
-    balance: Optional[float] = Field(None, ge=0)
+    balance: Optional[float] = Field(None)  # Allow negative balances for credit cards
     description: Optional[str] = None
     credit_limit: Optional[float] = Field(None, ge=0)
     due_date: Optional[int] = Field(None, ge=1, le=31)

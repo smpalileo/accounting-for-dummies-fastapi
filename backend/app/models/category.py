@@ -7,7 +7,8 @@ class Category(Base):
     __tablename__ = "categories"
     
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String(100), nullable=False, index=True)
     description = Column(Text, nullable=True)
     color = Column(String(7), nullable=True)  # Hex color code
     
@@ -19,4 +20,5 @@ class Category(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
     # Relationships
+    user = relationship("User", back_populates="categories")
     transactions = relationship("Transaction", back_populates="category")

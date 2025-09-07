@@ -13,7 +13,7 @@ router = APIRouter()
 def get_allocations(
     db: Session = Depends(get_db),
     account_id: Optional[int] = Query(None, description="Filter by account ID"),
-    allocation_type: Optional[AllocationType] = Query(None, description="Filter by allocation type"),
+    allocation_type: Optional[str] = Query(None, description="Filter by allocation type"),
     is_active: Optional[bool] = Query(None, description="Filter by active status")
 ):
     """Get all allocations with optional filtering"""
@@ -22,7 +22,12 @@ def get_allocations(
     if account_id:
         query = query.filter(Allocation.account_id == account_id)
     if allocation_type:
-        query = query.filter(Allocation.allocation_type == allocation_type)
+        # Convert string to enum
+        try:
+            allocation_type_enum = AllocationType(allocation_type.lower())
+            query = query.filter(Allocation.allocation_type == allocation_type_enum)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid allocation type: {allocation_type}")
     if is_active is not None:
         query = query.filter(Allocation.is_active == is_active)
     

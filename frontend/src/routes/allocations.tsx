@@ -1,13 +1,34 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useGetAllocationsQuery, useGetAccountsQuery, useCreateAllocationMutation, useUpdateAllocationMutation, useDeleteAllocationMutation, useGetAllocationProgressQuery } from '../store/api'
-import { useState } from 'react'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useGetAllocationsQuery, useGetAccountsQuery, useCreateAllocationMutation, useUpdateAllocationMutation, useDeleteAllocationMutation } from '../store/api'
+import { useState, useEffect } from 'react'
 import { Allocation } from '../store/api'
+import { useAuth } from '../contexts/AuthContext'
 
 export const Route = createFileRoute('/allocations')({
   component: AllocationsPage,
 })
 
-function AllocationsPage() {
+export function AllocationsPage() {
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      navigate({ to: '/login' })
+    }
+  }, [isAuthenticated, authLoading, navigate])
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return null // Will redirect
+  }
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [editingAllocation, setEditingAllocation] = useState<Allocation | null>(null)
   const [formData, setFormData] = useState({
