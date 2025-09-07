@@ -3,6 +3,7 @@ import { useGetAllocationsQuery, useGetAccountsQuery, useCreateAllocationMutatio
 import { useState, useEffect } from 'react'
 import { Allocation } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
+import { useCurrency } from '../hooks/useCurrency'
 
 export const Route = createFileRoute('/allocations')({
   component: AllocationsPage,
@@ -11,6 +12,7 @@ export const Route = createFileRoute('/allocations')({
 export function AllocationsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const { format } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -162,14 +164,14 @@ export function AllocationsPage() {
               <div className="space-y-3">
                 <div className="flex justify-between">
                   <span className="text-gray-600">Current:</span>
-                  <span className="font-bold">${allocation.current_amount.toFixed(2)}</span>
+                  <span className="font-bold">{format(allocation.current_amount)}</span>
                 </div>
                 
                 {allocation.target_amount && (
                   <>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Target:</span>
-                      <span className="font-medium">${allocation.target_amount.toFixed(2)}</span>
+                      <span className="font-medium">{format(allocation.target_amount)}</span>
                     </div>
                     
                     <div className="w-full bg-gray-200 rounded-full h-2">
@@ -188,7 +190,7 @@ export function AllocationsPage() {
                 {allocation.monthly_target && (
                   <div className="flex justify-between">
                     <span className="text-gray-600">Monthly Target:</span>
-                    <span className="font-medium">${allocation.monthly_target.toFixed(2)}</span>
+                    <span className="font-medium">{format(allocation.monthly_target)}</span>
                   </div>
                 )}
                 

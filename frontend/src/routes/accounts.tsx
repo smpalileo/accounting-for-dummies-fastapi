@@ -3,6 +3,7 @@ import { useGetAccountsQuery, useCreateAccountMutation, useUpdateAccountMutation
 import { useState, useEffect } from 'react'
 import { Account } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
+import { useCurrency } from '../hooks/useCurrency'
 
 export const Route = createFileRoute('/accounts')({
   component: AccountsPage,
@@ -11,6 +12,7 @@ export const Route = createFileRoute('/accounts')({
 export function AccountsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const { format } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -177,14 +179,14 @@ export function AccountsPage() {
               <div className="flex justify-between">
                 <span className="text-gray-600">Balance:</span>
                 <span className={`font-bold ${account.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  ${account.balance.toFixed(2)}
+                  {format(account.balance)}
                 </span>
               </div>
               
               {account.account_type === 'credit' && account.credit_limit && (
                 <div className="flex justify-between">
                   <span className="text-gray-600">Credit Limit:</span>
-                  <span className="font-medium">${account.credit_limit.toFixed(2)}</span>
+                  <span className="font-medium">{format(account.credit_limit)}</span>
                 </div>
               )}
               

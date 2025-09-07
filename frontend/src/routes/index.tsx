@@ -3,6 +3,7 @@ import { useGetAccountsQuery, useGetTransactionsQuery, useGetGoalsSummaryQuery, 
 import { useState, useEffect } from 'react'
 import { Navigation } from '../components/Navigation'
 import { useAuth } from '../contexts/AuthContext'
+import { useCurrency } from '../hooks/useCurrency'
 
 export const Route = createFileRoute('/')({
   component: Dashboard,
@@ -11,6 +12,7 @@ export const Route = createFileRoute('/')({
 export function Dashboard() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const { format } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -232,7 +234,7 @@ export function Dashboard() {
             <div>
               <p className="stat-label">Total Balance</p>
               <p className={`stat-value ${totalBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                ${totalBalance.toFixed(2)}
+                {format(totalBalance)}
               </p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
@@ -248,7 +250,7 @@ export function Dashboard() {
             <div>
               <p className="stat-label">Total Income ({selectedPeriod})</p>
               <p className="stat-value text-green-600">
-                ${periodSummary?.summary?.total_income?.toFixed(2) || '0.00'}
+                {format(periodSummary?.summary?.total_income || 0)}
               </p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
@@ -264,7 +266,7 @@ export function Dashboard() {
             <div>
               <p className="stat-label">Total Expenditure ({selectedPeriod})</p>
               <p className="stat-value text-red-600">
-                ${periodSummary?.summary?.total_expenses?.toFixed(2) || '0.00'}
+                {format(periodSummary?.summary?.total_expenses || 0)}
               </p>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
@@ -299,7 +301,7 @@ export function Dashboard() {
                   </svg>
                 </div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Income</p>
-                <p className="text-2xl font-bold text-green-600">${periodSummary.summary.total_income.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-green-600">{format(periodSummary.summary.total_income)}</p>
               </div>
               <div className="text-center p-4 bg-red-50 rounded-lg">
                 <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mx-auto mb-3">
@@ -308,7 +310,7 @@ export function Dashboard() {
                   </svg>
                 </div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Expenses</p>
-                <p className="text-2xl font-bold text-red-600">${periodSummary.summary.total_expenses.toFixed(2)}</p>
+                <p className="text-2xl font-bold text-red-600">{format(periodSummary.summary.total_expenses)}</p>
               </div>
               <div className="text-center p-4 bg-blue-50 rounded-lg">
                 <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-3">
@@ -318,7 +320,7 @@ export function Dashboard() {
                 </div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Net Flow</p>
                 <p className={`text-2xl font-bold ${periodSummary.summary.net_flow >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  ${periodSummary.summary.net_flow.toFixed(2)}
+                  {format(periodSummary.summary.net_flow)}
                 </p>
               </div>
             </div>
@@ -362,13 +364,13 @@ export function Dashboard() {
                       <p className="font-medium text-gray-900">{account.name}</p>
                       <p className="text-sm text-gray-500 capitalize">{account.account_type.replace('_', ' ')}</p>
                       {account.account_type === 'credit' && account.credit_limit && (
-                        <p className="text-xs text-gray-400">Limit: ${account.credit_limit.toFixed(2)}</p>
+                        <p className="text-xs text-gray-400">Limit: {format(account.credit_limit)}</p>
                       )}
                     </div>
                   </div>
                   <div className="text-right">
                     <span className={`font-bold text-lg ${account.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      ${account.balance.toFixed(2)}
+                      {format(account.balance)}
                     </span>
                     {account.account_type === 'credit' && account.credit_limit && (
                       <div className="w-20 bg-gray-200 rounded-full h-1.5 mt-1">
@@ -418,7 +420,7 @@ export function Dashboard() {
                         <p className={`font-bold text-lg ${daysUntilDue <= 7 ? 'text-red-600' : daysUntilDue <= 14 ? 'text-yellow-600' : 'text-green-600'}`}>
                           {daysUntilDue > 0 ? `${daysUntilDue} days` : 'Overdue'}
                         </p>
-                        <p className="text-sm text-gray-500">${Math.abs(card.balance).toFixed(2)}</p>
+                        <p className="text-sm text-gray-500">{format(Math.abs(card.balance))}</p>
                       </div>
                     </div>
                   )
@@ -464,7 +466,7 @@ export function Dashboard() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-1">
                           <p className="text-sm font-medium text-gray-900 truncate">{category.name}</p>
-                          <p className="text-sm font-bold text-gray-900">${category.amount.toFixed(2)}</p>
+                          <p className="text-sm font-bold text-gray-900">{format(category.amount)}</p>
                         </div>
                         <div className="w-full bg-gray-200 rounded-full h-2">
                           <div 
@@ -488,7 +490,7 @@ export function Dashboard() {
                               <div className="w-2 h-2 bg-gray-400 rounded-full"></div>
                               <span className="text-sm text-gray-700">{transaction.description}</span>
                             </div>
-                            <span className="text-sm font-medium text-gray-900">${transaction.amount.toFixed(2)}</span>
+                            <span className="text-sm font-medium text-gray-900">{format(transaction.amount)}</span>
                           </div>
                         ))}
                       </div>
@@ -533,8 +535,8 @@ export function Dashboard() {
                     ></div>
                   </div>
                   <div className="flex justify-between text-sm text-gray-600">
-                    <span className="font-medium">${goal.current_amount.toFixed(2)}</span>
-                    <span>${goal.target_amount?.toFixed(2) || 'No target'}</span>
+                    <span className="font-medium">{format(goal.current_amount)}</span>
+                    <span>{format(goal.target_amount || 0)}</span>
                   </div>
                 </div>
               ))}
@@ -587,7 +589,7 @@ export function Dashboard() {
                   </div>
                   <div className="text-right">
                     <span className={`font-bold text-lg ${transaction.transaction_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
-                      {transaction.transaction_type === 'credit' ? '+' : '-'}${transaction.amount.toFixed(2)}
+                      {transaction.transaction_type === 'credit' ? '+' : '-'}{format(transaction.amount)}
                     </span>
                     <p className="text-xs text-gray-400 capitalize">{transaction.transaction_type}</p>
                   </div>

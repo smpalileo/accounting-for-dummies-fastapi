@@ -3,6 +3,7 @@ import { useGetTransactionsQuery, useGetAccountsQuery, useGetCategoriesQuery, us
 import { useState, useEffect } from 'react'
 import { Transaction } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
+import { useCurrency } from '../hooks/useCurrency'
 
 export const Route = createFileRoute('/transactions')({
   component: TransactionsPage,
@@ -11,6 +12,7 @@ export const Route = createFileRoute('/transactions')({
 export function TransactionsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const { format } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -277,7 +279,7 @@ export function TransactionsPage() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                       <span className={transaction.transaction_type === 'credit' ? 'text-green-600' : 'text-red-600'}>
-                        {transaction.transaction_type === 'credit' ? '+' : '-'}${transaction.amount.toFixed(2)}
+                        {transaction.transaction_type === 'credit' ? '+' : '-'}{format(transaction.amount)}
                       </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
@@ -331,7 +333,7 @@ export function TransactionsPage() {
                   <option value="">Select Account</option>
                   {accounts?.map((account) => (
                     <option key={account.id} value={account.id}>
-                      {account.name} (${account.balance.toFixed(2)})
+                      {account.name} ({format(account.balance)})
                     </option>
                   ))}
                 </select>
