@@ -1,3 +1,21 @@
+/**
+ * Get the currency symbol for logo or branding use (single character or short string)
+ */
+export function getCurrencyLogoSymbol(currencyCode?: string): string {
+  switch (currencyCode) {
+    case 'USD': return '$';
+    case 'PHP': return '₱';
+    case 'EUR': return '€';
+    case 'GBP': return '£';
+    case 'JPY': return '¥';
+    case 'AUD': return 'A$';
+    case 'CAD': return 'C$';
+    case 'CHF': return 'CHF';
+    case 'CNY': return '¥';
+    case 'SGD': return 'S$';
+    default: return '₱';
+  }
+}
 // Currency utility functions
 export type CurrencyCode = 'PHP' | 'USD' | 'EUR' | 'GBP' | 'JPY' | 'AUD' | 'CAD' | 'CHF' | 'CNY' | 'SGD'
 

@@ -12,7 +12,7 @@ export const Route = createFileRoute('/accounts')({
 export function AccountsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
-  const { format } = useCurrency()
+  const { format, symbol } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -270,7 +270,7 @@ export function AccountsPage() {
                 <label className="label">Initial Balance</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <span className="text-gray-500 sm:text-sm">$</span>
+                    <span className="text-gray-500 sm:text-sm">{symbol}</span>
                   </div>
                   <input
                     type="number"
@@ -303,7 +303,7 @@ export function AccountsPage() {
                     <label className="label">Credit Limit</label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <span className="text-gray-500 sm:text-sm">$</span>
+                        <span className="text-gray-500 sm:text-sm">{symbol}</span>
                       </div>
                       <input
                         type="number"
