@@ -20,17 +20,6 @@ export function AllocationsPage() {
     }
   }, [isAuthenticated, authLoading, navigate])
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
-  }
-
-  if (!isAuthenticated) {
-    return null // Will redirect
-  }
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [editingAllocation, setEditingAllocation] = useState<Allocation | null>(null)
   const [formData, setFormData] = useState({
@@ -44,12 +33,34 @@ export function AllocationsPage() {
     target_date: undefined as string | undefined,
   })
 
-  const { data: allocations, isLoading } = useGetAllocationsQuery({ is_active: true })
-  const { data: accounts } = useGetAccountsQuery({ is_active: true })
+  const { data: allocationsData, isLoading: isAllocationsLoading } = useGetAllocationsQuery(
+    { is_active: true },
+    { skip: !isAuthenticated }
+  )
+  const { data: accountsData, isLoading: isAccountsLoading } = useGetAccountsQuery(
+    { is_active: true },
+    { skip: !isAuthenticated }
+  )
   
   const [createAllocation] = useCreateAllocationMutation()
   const [updateAllocation] = useUpdateAllocationMutation()
   const [deleteAllocation] = useDeleteAllocationMutation()
+
+  const allocations = allocationsData ?? []
+  const accounts = accountsData ?? []
+  const isLoading = isAllocationsLoading || isAccountsLoading
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return null // Will redirect
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -116,11 +127,11 @@ export function AllocationsPage() {
 
   return (
     <div className="max-w-6xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-8 gap-4">
         <h1 className="text-3xl font-bold text-gray-900">Allocations</h1>
         <button
           onClick={() => setIsCreateModalOpen(true)}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 w-full sm:w-auto flex items-center justify-center"
         >
           Add Allocation
         </button>
@@ -128,8 +139,8 @@ export function AllocationsPage() {
 
       {/* Allocations Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {allocations?.map((allocation) => {
-          const account = accounts?.find(a => a.id === allocation.account_id)
+        {allocations.map((allocation) => {
+          const account = accounts.find(a => a.id === allocation.account_id)
           const progressPercentage = allocation.target_amount 
             ? (allocation.current_amount / allocation.target_amount) * 100 
             : 0
@@ -224,7 +235,7 @@ export function AllocationsPage() {
                   required
                 >
                   <option value="">Select Account</option>
-                  {accounts?.map((account) => (
+                  {accounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name}
                     </option>

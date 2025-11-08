@@ -2,17 +2,20 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 from app.models.account import AccountType
+from app.models.user import CurrencyType
 
 class AccountBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     account_type: AccountType
     balance: float = Field(default=0.0)  # Allow negative balances for credit cards
     description: Optional[str] = None
+    currency: CurrencyType = CurrencyType.PHP
     
     # Credit card specific fields
     credit_limit: Optional[float] = Field(None, ge=0)
-    due_date: Optional[int] = Field(None, ge=1, le=31)  # Day of month
-    billing_cycle_start: Optional[int] = Field(None, ge=1, le=31)  # Day of month
+    due_date: Optional[int] = Field(None, ge=1, le=31)  # Day of month (legacy support)
+    billing_cycle_start: Optional[int] = Field(None, ge=1, le=31)  # Day of month / statement day
+    days_until_due_date: Optional[int] = Field(21, ge=1, le=90)
 
 class AccountCreate(AccountBase):
     pass
@@ -22,9 +25,11 @@ class AccountUpdate(BaseModel):
     account_type: Optional[AccountType] = None
     balance: Optional[float] = Field(None)  # Allow negative balances for credit cards
     description: Optional[str] = None
+    currency: Optional[CurrencyType] = None
     credit_limit: Optional[float] = Field(None, ge=0)
     due_date: Optional[int] = Field(None, ge=1, le=31)
     billing_cycle_start: Optional[int] = Field(None, ge=1, le=31)
+    days_until_due_date: Optional[int] = Field(None, ge=1, le=90)
     is_active: Optional[bool] = None
 
 class AccountResponse(AccountBase):

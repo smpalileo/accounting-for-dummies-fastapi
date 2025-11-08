@@ -1,24 +1,54 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useGetAccountsQuery, useCreateAccountMutation, useUpdateAccountMutation, useDeleteAccountMutation } from '../store/api'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Account } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
-import { useCurrency } from '../hooks/useCurrency'
+import { formatCurrency, getCurrencySymbol, CurrencyCode, CURRENCY_CONFIGS } from '../utils/currency'
 
 export const Route = createFileRoute('/accounts')({
   component: AccountsPage,
 })
 
 export function AccountsPage() {
-  const { isAuthenticated, isLoading: authLoading } = useAuth()
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
-  const { format, symbol } = useCurrency()
+  const defaultCurrency = (user?.default_currency as CurrencyCode) || 'PHP'
+  const currencyOptions = useMemo(() => Object.keys(CURRENCY_CONFIGS) as CurrencyCode[], [])
+
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
+  const [formData, setFormData] = useState({
+    name: '',
+    account_type: 'checking' as Account['account_type'],
+    balance: 0,
+    description: '',
+    credit_limit: undefined as number | undefined,
+    due_date: undefined as number | undefined,
+    billing_cycle_start: undefined as number | undefined,
+    currency: defaultCurrency,
+    days_until_due_date: 21,
+  })
+
+  const { data: accounts, isLoading } = useGetAccountsQuery({})
+  const [createAccount] = useCreateAccountMutation()
+  const [updateAccount] = useUpdateAccountMutation()
+  const [deleteAccount] = useDeleteAccountMutation()
+  const formCurrencySymbol = getCurrencySymbol(formData.currency as CurrencyCode)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       navigate({ to: '/login' })
     }
   }, [isAuthenticated, authLoading, navigate])
+
+  useEffect(() => {
+    if (!editingAccount) {
+      setFormData((prev) => ({
+        ...prev,
+        currency: defaultCurrency,
+      }))
+    }
+  }, [defaultCurrency, editingAccount])
 
   if (authLoading) {
     return (
@@ -31,22 +61,6 @@ export function AccountsPage() {
   if (!isAuthenticated) {
     return null // Will redirect
   }
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
-  const [editingAccount, setEditingAccount] = useState<Account | null>(null)
-  const [formData, setFormData] = useState({
-    name: '',
-    account_type: 'checking' as Account['account_type'],
-    balance: 0,
-    description: '',
-    credit_limit: undefined as number | undefined,
-    due_date: undefined as number | undefined,
-    billing_cycle_start: undefined as number | undefined,
-  })
-
-  const { data: accounts, isLoading } = useGetAccountsQuery({})
-  const [createAccount] = useCreateAccountMutation()
-  const [updateAccount] = useUpdateAccountMutation()
-  const [deleteAccount] = useDeleteAccountMutation()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -65,6 +79,8 @@ export function AccountsPage() {
         credit_limit: undefined,
         due_date: undefined,
         billing_cycle_start: undefined,
+        currency: defaultCurrency,
+        days_until_due_date: 21,
       })
       setIsCreateModalOpen(false)
     } catch (error) {
@@ -82,6 +98,8 @@ export function AccountsPage() {
       credit_limit: account.credit_limit,
       due_date: account.due_date,
       billing_cycle_start: account.billing_cycle_start,
+      currency: (account.currency as CurrencyCode) || defaultCurrency,
+      days_until_due_date: account.days_until_due_date ?? 21,
     })
     setIsCreateModalOpen(true)
   }
@@ -109,13 +127,13 @@ export function AccountsPage() {
 
   return (
     <div className="max-w-6xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-8 gap-4">
         <h1 className="text-3xl font-bold text-gray-900">Accounts Management</h1>
         <button
           onClick={() => setIsCreateModalOpen(true)}
-          className="btn-primary focus-ring"
+          className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-blue-600 text-white text-base font-semibold shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all duration-200"
         >
-          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
           </svg>
           Add Account
@@ -156,7 +174,7 @@ export function AccountsPage() {
               <div className="flex space-x-1">
                 <button
                   onClick={() => handleEdit(account)}
-                  className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors duration-200"
+                  className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors duration-200 w-full sm:w-auto"
                   title="Edit account"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -165,7 +183,7 @@ export function AccountsPage() {
                 </button>
                 <button
                   onClick={() => handleDelete(account.id)}
-                  className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors duration-200"
+                  className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors duration-200 w-full sm:w-auto"
                   title="Delete account"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -179,14 +197,14 @@ export function AccountsPage() {
               <div className="flex justify-between">
                 <span className="text-gray-600">Balance:</span>
                 <span className={`font-bold ${account.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {format(account.balance)}
+                  {formatCurrency(account.balance, account.currency as CurrencyCode)}
                 </span>
               </div>
               
               {account.account_type === 'credit' && account.credit_limit && (
                 <div className="flex justify-between">
                   <span className="text-gray-600">Credit Limit:</span>
-                  <span className="font-medium">{format(account.credit_limit)}</span>
+                  <span className="font-medium">{formatCurrency(account.credit_limit, account.currency as CurrencyCode)}</span>
                 </div>
               )}
               
@@ -203,6 +221,18 @@ export function AccountsPage() {
                   {account.is_active ? 'Active' : 'Inactive'}
                 </span>
               </div>
+              
+              <div className="flex justify-between">
+                <span className="text-gray-600">Currency:</span>
+                <span className="font-medium">{account.currency}</span>
+              </div>
+              
+              {account.account_type === 'credit' && account.days_until_due_date && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Days Until Due Date:</span>
+                  <span className="font-medium">{account.days_until_due_date}</span>
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -228,9 +258,11 @@ export function AccountsPage() {
                     credit_limit: undefined,
                     due_date: undefined,
                     billing_cycle_start: undefined,
+                    currency: defaultCurrency,
+                    days_until_due_date: 21,
                   })
                 }}
-                className="text-gray-400 hover:text-gray-600 transition-colors duration-200"
+                className="text-gray-400 hover:text-gray-600 transition-colors duration-200 w-full sm:w-auto"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -267,10 +299,25 @@ export function AccountsPage() {
               </div>
               
               <div>
+                <label className="label">Account Currency</label>
+                <select
+                  value={formData.currency}
+                  onChange={(e) => setFormData({ ...formData, currency: e.target.value as CurrencyCode })}
+                  className="select-field focus-ring"
+                >
+                  {currencyOptions.map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency} ({getCurrencySymbol(currency)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              
+              <div>
                 <label className="label">Initial Balance</label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <span className="text-gray-500 sm:text-sm">{symbol}</span>
+                    <span className="text-gray-500 sm:text-sm">{formCurrencySymbol}</span>
                   </div>
                   <input
                     type="number"
@@ -303,7 +350,8 @@ export function AccountsPage() {
                     <label className="label">Credit Limit</label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <span className="text-gray-500 sm:text-sm">{symbol}</span>
+                        <span className="text-gray-500 sm:text-sm">{formCurrencySymbol}</span>
+                        <span className="text-gray-500 sm:text-sm">{formCurrencySymbol}</span>
                       </div>
                       <input
                         type="number"
@@ -343,13 +391,33 @@ export function AccountsPage() {
                       ))}
                     </select>
                   </div>
+                  
+                  <div>
+                    <label className="label">Days Until Due Date</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={90}
+                      value={formData.days_until_due_date}
+                      onChange={(e) => {
+                        const value = parseInt(e.target.value, 10)
+                        setFormData({
+                          ...formData,
+                          days_until_due_date: Number.isNaN(value) ? 21 : value,
+                        })
+                      }}
+                      className="input-field focus-ring"
+                      placeholder="21"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Default is 21 days after the statement date.</p>
+                  </div>
                 </div>
               )}
               
               <div className="flex space-x-3 pt-6 border-t border-gray-200">
                 <button
                   type="submit"
-                  className="flex-1 btn-primary focus-ring"
+                  className="flex-1 btn-primary focus-ring w-full sm:w-auto py-3 px-4 text-base rounded-lg"
                 >
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -369,9 +437,11 @@ export function AccountsPage() {
                       credit_limit: undefined,
                       due_date: undefined,
                       billing_cycle_start: undefined,
+                    currency: defaultCurrency,
+                    days_until_due_date: 21,
                     })
                   }}
-                  className="flex-1 btn-secondary focus-ring"
+                  className="flex-1 btn-secondary focus-ring w-full sm:w-auto py-3 px-4 text-base rounded-lg"
                 >
                   Cancel
                 </button>

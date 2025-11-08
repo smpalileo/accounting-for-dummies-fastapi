@@ -4,13 +4,15 @@
       "name": "Main Checking Account",
       "account_type": "CHECKING",
       "balance": 2500.00,
-      "description": "Primary bank account for daily expenses"
+      "description": "Primary bank account for daily expenses",
+      "currency": "PHP"
     },
     {
       "name": "Savings Account",
       "account_type": "SAVINGS",
       "balance": 15000.00,
-      "description": "Emergency fund and long-term savings"
+      "description": "Emergency fund and long-term savings",
+      "currency": "PHP"
     },
     {
       "name": "Credit Card",
@@ -19,19 +21,23 @@
       "description": "Primary credit card for purchases",
       "credit_limit": 10000.00,
       "due_date": 15,
-      "billing_cycle_start": 1
+      "billing_cycle_start": 1,
+      "days_until_due_date": 21,
+      "currency": "PHP"
     },
     {
       "name": "Cash Wallet",
       "account_type": "CASH",
       "balance": 200.00,
-      "description": "Physical cash for small purchases"
+      "description": "Physical cash for small purchases",
+      "currency": "PHP"
     },
     {
       "name": "PayPal",
       "account_type": "E_WALLET",
       "balance": 150.00,
-      "description": "Digital wallet for online transactions"
+      "description": "Digital wallet for online transactions",
+      "currency": "USD"
     }
   ],
   "categories": [
@@ -146,7 +152,8 @@
       "amount": 45.50,
       "description": "Grocery shopping at Whole Foods",
       "transaction_type": "DEBIT",
-      "transaction_date": "2025-08-25T10:30:00"
+      "transaction_date": "2025-08-25T10:30:00",
+      "is_posted": true
     },
     {
       "account_id": 1,
@@ -155,15 +162,38 @@
       "amount": 35.00,
       "description": "Gas station fill-up",
       "transaction_type": "DEBIT",
-      "transaction_date": "2025-08-29T16:45:00"
+      "transaction_date": "2025-08-29T16:45:00",
+      "is_posted": true,
+      "is_recurring": false
     },
     {
       "account_id": 1,
       "category_id": 9,
       "amount": 3000.00,
-      "description": "Monthly salary deposit",
+      "description": "Monthly salary deposit (converted from USD)",
       "transaction_type": "CREDIT",
-      "transaction_date": "2025-08-11T09:00:00"
+      "transaction_date": "2025-08-11T09:00:00",
+      "original_amount": 3200.00,
+      "original_currency": "USD",
+      "projected_amount": 3200.00,
+      "projected_currency": "USD",
+      "exchange_rate": 53.50,
+      "is_posted": true
+    },
+    {
+      "account_id": 1,
+      "category_id": 9,
+      "amount": 2950.00,
+      "description": "Projected salary deposit (awaiting conversion)",
+      "transaction_type": "CREDIT",
+      "transaction_date": "2025-09-11T09:00:00",
+      "projected_amount": 3200.00,
+      "projected_currency": "USD",
+      "original_amount": 3200.00,
+      "original_currency": "USD",
+      "exchange_rate": 53.20,
+      "is_posted": false,
+      "is_recurring": true
     },
     {
       "account_id": 3,
@@ -172,16 +202,45 @@
       "description": "Online purchase - Amazon",
       "transaction_type": "DEBIT",
       "transaction_date": "2025-08-21T14:20:00",
-      "posting_date": "2025-08-22T00:00:00"
+      "posting_date": "2025-08-22T00:00:00",
+      "is_posted": true
     },
     {
-      "account_id": 2,
-      "category_id": 9,
-      "allocation_id": 1,
+      "account_id": 1,
       "amount": 1000.00,
       "description": "Transfer to emergency fund",
-      "transaction_type": "CREDIT",
-      "transaction_date": "2025-08-11T12:00:00"
+      "transaction_type": "TRANSFER",
+      "transaction_date": "2025-08-11T12:00:00",
+      "transfer_from_account_id": 1,
+      "transfer_to_account_id": 2,
+      "transfer_fee": 15.00,
+      "is_posted": true
+    },
+    {
+      "account_id": 1,
+      "amount": 500.00,
+      "description": "ATM withdrawal for weekend cash",
+      "transaction_type": "TRANSFER",
+      "transaction_date": "2025-08-30T09:15:00",
+      "transfer_from_account_id": 1,
+      "transfer_to_account_id": 4,
+      "transfer_fee": 10.00,
+      "is_posted": true
+    },
+    {
+      "account_id": 3,
+      "category_id": 3,
+      "amount": 850.00,
+      "description": "Netflix subscription (auto-pay)",
+      "transaction_type": "DEBIT",
+      "transaction_date": "2025-09-05T08:00:00",
+      "projected_amount": 14.99,
+      "projected_currency": "USD",
+      "original_amount": 14.99,
+      "original_currency": "USD",
+      "exchange_rate": 56.70,
+      "is_posted": false,
+      "is_recurring": true
     }
   ]
 }

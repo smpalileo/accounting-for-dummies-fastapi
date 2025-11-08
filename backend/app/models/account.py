@@ -3,6 +3,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import enum
+from app.models.user import CurrencyType
 
 class AccountType(str, enum.Enum):
     CASH = "cash"
@@ -19,12 +20,14 @@ class Account(Base):
     name = Column(String(100), nullable=False, index=True)
     account_type = Column(Enum(AccountType), nullable=False)
     balance = Column(Float, default=0.0, nullable=False)
+    currency = Column(Enum(CurrencyType), nullable=False, default=CurrencyType.PHP)
     description = Column(Text, nullable=True)
     
     # Credit card specific fields
     credit_limit = Column(Float, nullable=True)
-    due_date = Column(Integer, nullable=True)  # Day of month for due date
-    billing_cycle_start = Column(Integer, nullable=True)  # Day of month for billing cycle start
+    due_date = Column(Integer, nullable=True)  # Day of month for due date (legacy support)
+    billing_cycle_start = Column(Integer, nullable=True)  # Day of month for billing cycle start / statement day
+    days_until_due_date = Column(Integer, nullable=True, default=21)
     
     # Account status
     is_active = Column(Boolean, default=True)
@@ -34,5 +37,10 @@ class Account(Base):
     
     # Relationships
     user = relationship("User", back_populates="accounts")
-    transactions = relationship("Transaction", back_populates="account")
+    transactions = relationship(
+        "Transaction",
+        back_populates="account",
+        foreign_keys="Transaction.account_id",
+        lazy="selectin",
+    )
     allocations = relationship("Allocation", back_populates="account")

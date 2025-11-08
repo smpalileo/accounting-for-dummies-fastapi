@@ -1,4 +1,5 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react'
+import type { CurrencyCode } from '../utils/currency'
 
 // Types for our API responses
 export interface Account {
@@ -6,10 +7,12 @@ export interface Account {
   name: string
   account_type: 'cash' | 'e_wallet' | 'savings' | 'checking' | 'credit'
   balance: number
+  currency: CurrencyCode
   description?: string
   credit_limit?: number
   due_date?: number
   billing_cycle_start?: number
+  days_until_due_date?: number
   is_active: boolean
   created_at: string
   updated_at?: string
@@ -47,14 +50,24 @@ export interface Transaction {
   category_id?: number
   allocation_id?: number
   amount: number
+  currency: CurrencyCode
+  projected_amount?: number
+  projected_currency?: CurrencyCode
+  original_amount?: number
+  original_currency?: CurrencyCode
+  exchange_rate?: number
   description?: string
-  transaction_type: 'debit' | 'credit'
+  transaction_type: 'debit' | 'credit' | 'transfer'
   transaction_date: string
   posting_date?: string
   receipt_url?: string
   invoice_url?: string
+  is_posted: boolean
   is_reconciled: boolean
   is_recurring: boolean
+  transfer_fee: number
+  transfer_from_account_id?: number
+  transfer_to_account_id?: number
   created_at: string
   updated_at?: string
 }
@@ -112,19 +125,20 @@ export interface GoalsSummary {
 }
 
 // Custom baseQuery with auth token and debug logging
-const baseQueryWithAuth = async (args: any, api: any, extraOptions: any) => {
-  const token = localStorage.getItem('access_token')
-  
+const rawBaseQuery = fetchBaseQuery({
+  baseUrl: '/api/v1',
+  prepareHeaders: (headers) => {
+    const token = localStorage.getItem('access_token')
+    if (token) {
+      headers.set('authorization', `Bearer ${token}`)
+    }
+    return headers
+  },
+})
+
+const baseQueryWithAuth: typeof rawBaseQuery = async (args, api, extraOptions) => {
   console.log('API Request:', args)
-  const result = await fetchBaseQuery({
-    baseUrl: '/api/v1',
-    prepareHeaders: (headers) => {
-      if (token) {
-        headers.set('authorization', `Bearer ${token}`)
-      }
-      return headers
-    },
-  })(args, api, extraOptions)
+  const result = await rawBaseQuery(args, api, extraOptions)
   console.log('API Response:', result)
   
   // If we get a 401, clear the token and redirect to login

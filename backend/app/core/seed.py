@@ -43,12 +43,16 @@ def seed_database():
         # Create accounts associated with the default user
         accounts = []
         account_id_mapping = {}  # Map original index to actual ID
+        account_obj_mapping = {}
         for i, account_data in enumerate(seed_data["accounts"]):
             # Convert account_type string to enum (convert uppercase to lowercase)
             account_type_str = account_data["account_type"].lower()
             account_data["account_type"] = AccountType(account_type_str)
             # Add user_id to account data
             account_data["user_id"] = default_user.id
+            account_data.setdefault("currency", default_user.default_currency)
+            if account_data.get("days_until_due_date") is None:
+                account_data["days_until_due_date"] = 21
             account = Account(**account_data)
             db.add(account)
             accounts.append(account)
@@ -58,6 +62,7 @@ def seed_database():
         for i, account in enumerate(accounts):
             db.refresh(account)
             account_id_mapping[i + 1] = account.id  # Original seed data uses 1-based indexing
+            account_obj_mapping[i + 1] = account
         
         # Create categories associated with the default user
         categories = []
@@ -102,6 +107,7 @@ def seed_database():
         
         # Create transactions associated with the default user
         for transaction_data in seed_data["transactions"]:
+            original_account_id = transaction_data["account_id"]
             # Convert transaction_type string to enum (convert uppercase to lowercase)
             transaction_type_str = transaction_data["transaction_type"].lower()
             transaction_data["transaction_type"] = TransactionType(transaction_type_str)
@@ -112,10 +118,29 @@ def seed_database():
             # Add user_id to transaction data
             transaction_data["user_id"] = default_user.id
             # Map foreign key IDs to actual IDs
-            transaction_data["account_id"] = account_id_mapping[transaction_data["account_id"]]
-            transaction_data["category_id"] = category_id_mapping[transaction_data["category_id"]]
+            transaction_data["account_id"] = account_id_mapping[original_account_id]
+            original_category_id = transaction_data.get("category_id")
+            if original_category_id is not None:
+                transaction_data["category_id"] = category_id_mapping[original_category_id]
             if transaction_data.get("allocation_id"):
                 transaction_data["allocation_id"] = allocation_id_mapping[transaction_data["allocation_id"]]
+            if transaction_data.get("transfer_from_account_id"):
+                transaction_data["transfer_from_account_id"] = account_id_mapping[
+                    transaction_data["transfer_from_account_id"]
+                ]
+            elif transaction_data["transaction_type"] == TransactionType.TRANSFER:
+                transaction_data["transfer_from_account_id"] = account_id_mapping[original_account_id]
+            if transaction_data.get("transfer_to_account_id"):
+                transaction_data["transfer_to_account_id"] = account_id_mapping[
+                    transaction_data["transfer_to_account_id"]
+                ]
+            account_ref = account_obj_mapping.get(original_account_id)
+            if transaction_data.get("currency") is None and account_ref:
+                transaction_data["currency"] = account_ref.currency
+            if transaction_data.get("projected_amount") is not None and transaction_data.get("projected_currency") is None and account_ref:
+                transaction_data["projected_currency"] = account_ref.currency
+            if transaction_data.get("transfer_fee") is None:
+                transaction_data["transfer_fee"] = 0.0
             transaction = Transaction(**transaction_data)
             db.add(transaction)
         db.commit()

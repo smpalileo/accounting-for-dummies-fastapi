@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List, Optional
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
@@ -31,10 +32,22 @@ def get_transactions(
     user_accounts = db.query(Account).filter(Account.user_id == current_user.id).all()
     user_account_ids = [account.id for account in user_accounts]
     
-    query = db.query(Transaction).filter(Transaction.account_id.in_(user_account_ids))
+    query = db.query(Transaction).filter(
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
+    )
     
     if account_id:
-        query = query.filter(Transaction.account_id == account_id)
+        query = query.filter(
+            or_(
+                Transaction.account_id == account_id,
+                Transaction.transfer_from_account_id == account_id,
+                Transaction.transfer_to_account_id == account_id
+            )
+        )
     if category_id:
         query = query.filter(Transaction.category_id == category_id)
     if allocation_id:
@@ -59,22 +72,68 @@ def get_transactions(
 @router.post("/", response_model=TransactionResponse)
 def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
     """Create a new transaction and update account balance"""
-    # Verify account exists and belongs to user
-    account = db.query(Account).filter(Account.id == transaction.account_id, Account.user_id == current_user.id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-    
-    # Create transaction
     transaction_data = transaction.dict()
-    transaction_data['user_id'] = current_user.id
+    transaction_data["user_id"] = current_user.id
+    transaction_data["transfer_fee"] = transaction.transfer_fee or 0.0
+    
+    primary_account: Optional[Account] = None
+    destination_account: Optional[Account] = None
+    
+    if transaction.transaction_type == TransactionType.TRANSFER:
+        if transaction.transfer_from_account_id is None or transaction.transfer_to_account_id is None:
+            raise HTTPException(status_code=400, detail="Transfer transactions require source and destination accounts")
+        if transaction.transfer_from_account_id == transaction.transfer_to_account_id:
+            raise HTTPException(status_code=400, detail="Transfer accounts must be different")
+        if transaction.account_id != transaction.transfer_from_account_id:
+            raise HTTPException(status_code=400, detail="For transfers, account_id must match transfer_from_account_id")
+        
+        primary_account = db.query(Account).filter(
+            Account.id == transaction.transfer_from_account_id,
+            Account.user_id == current_user.id
+        ).first()
+        if not primary_account:
+            raise HTTPException(status_code=404, detail="Source account not found")
+        
+        destination_account = db.query(Account).filter(
+            Account.id == transaction.transfer_to_account_id,
+            Account.user_id == current_user.id
+        ).first()
+        if not destination_account:
+            raise HTTPException(status_code=404, detail="Destination account not found")
+        
+        if transaction_data.get("currency") is None:
+            transaction_data["currency"] = destination_account.currency
+        if transaction_data.get("projected_currency") is None and transaction.projected_amount is not None:
+            transaction_data["projected_currency"] = destination_account.currency
+        if transaction_data.get("original_currency") is None and transaction.original_amount is not None:
+            transaction_data["original_currency"] = destination_account.currency
+    else:
+        primary_account = db.query(Account).filter(
+            Account.id == transaction.account_id,
+            Account.user_id == current_user.id
+        ).first()
+        if not primary_account:
+            raise HTTPException(status_code=404, detail="Account not found")
+        if transaction_data.get("currency") is None:
+            transaction_data["currency"] = primary_account.currency
+        if transaction_data.get("projected_currency") is None and transaction.projected_amount is not None:
+            transaction_data["projected_currency"] = primary_account.currency
+        if transaction_data.get("original_currency") is None and transaction.original_amount is not None:
+            transaction_data["original_currency"] = transaction_data["currency"]
+    
     db_transaction = Transaction(**transaction_data)
     db.add(db_transaction)
     
-    # Update account balance
-    if transaction.transaction_type == TransactionType.CREDIT:
-        account.balance += transaction.amount
-    else:
-        account.balance -= transaction.amount
+    if transaction.is_posted:
+        if transaction.transaction_type == TransactionType.CREDIT:
+            primary_account.balance += transaction.amount
+        elif transaction.transaction_type == TransactionType.DEBIT:
+            primary_account.balance -= transaction.amount
+        elif transaction.transaction_type == TransactionType.TRANSFER:
+            transfer_fee = transaction.transfer_fee or 0.0
+            primary_account.balance -= (transaction.amount + transfer_fee)
+            if destination_account:
+                destination_account.balance += transaction.amount
     
     db.commit()
     db.refresh(db_transaction)
@@ -89,7 +148,11 @@ def get_transaction(transaction_id: int, db: Session = Depends(get_db), current_
     
     transaction = db.query(Transaction).filter(
         Transaction.id == transaction_id,
-        Transaction.account_id.in_(user_account_ids)
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
     ).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -104,7 +167,11 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
     
     db_transaction = db.query(Transaction).filter(
         Transaction.id == transaction_id,
-        Transaction.account_id.in_(user_account_ids)
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
     ).first()
     if not db_transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -113,6 +180,30 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
     old_amount = db_transaction.amount
     old_type = db_transaction.transaction_type
     old_account_id = db_transaction.account_id
+    old_is_posted = db_transaction.is_posted
+    old_transfer_fee = db_transaction.transfer_fee or 0.0
+    old_transfer_from = db_transaction.transfer_from_account_id
+    old_transfer_to = db_transaction.transfer_to_account_id
+    
+    # Reverse previous balance effects if posted
+    if old_is_posted:
+        if old_type == TransactionType.CREDIT:
+            old_account = db.query(Account).filter(Account.id == old_account_id).first()
+            if old_account:
+                old_account.balance -= old_amount
+        elif old_type == TransactionType.DEBIT:
+            old_account = db.query(Account).filter(Account.id == old_account_id).first()
+            if old_account:
+                old_account.balance += old_amount
+        elif old_type == TransactionType.TRANSFER:
+            if old_transfer_from:
+                from_account = db.query(Account).filter(Account.id == old_transfer_from).first()
+                if from_account:
+                    from_account.balance += old_amount + old_transfer_fee
+            if old_transfer_to:
+                to_account = db.query(Account).filter(Account.id == old_transfer_to).first()
+                if to_account:
+                    to_account.balance -= old_amount
     
     # Update transaction
     update_data = transaction_update.dict(exclude_unset=True)
@@ -120,21 +211,65 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
         setattr(db_transaction, field, value)
     
     db_transaction.updated_at = datetime.utcnow()
+    db_transaction.transfer_fee = db_transaction.transfer_fee or 0.0
     
-    # Recalculate account balance
-    account = db.query(Account).filter(Account.id == old_account_id).first()
-    if account:
-        # Reverse old transaction
-        if old_type == TransactionType.CREDIT:
-            account.balance -= old_amount
+    primary_account: Optional[Account] = None
+    destination_account: Optional[Account] = None
+    
+    try:
+        if db_transaction.transaction_type == TransactionType.TRANSFER:
+            if db_transaction.transfer_from_account_id is None or db_transaction.transfer_to_account_id is None:
+                raise HTTPException(status_code=400, detail="Transfer transactions require source and destination accounts")
+            if db_transaction.transfer_from_account_id == db_transaction.transfer_to_account_id:
+                raise HTTPException(status_code=400, detail="Transfer accounts must be different")
+            
+            primary_account = db.query(Account).filter(
+                Account.id == db_transaction.transfer_from_account_id,
+                Account.user_id == current_user.id
+            ).first()
+            if not primary_account:
+                raise HTTPException(status_code=404, detail="Source account not found")
+            
+            destination_account = db.query(Account).filter(
+                Account.id == db_transaction.transfer_to_account_id,
+                Account.user_id == current_user.id
+            ).first()
+            if not destination_account:
+                raise HTTPException(status_code=404, detail="Destination account not found")
+            
+            db_transaction.account_id = db_transaction.transfer_from_account_id
+            if db_transaction.currency is None:
+                db_transaction.currency = destination_account.currency
+            if db_transaction.projected_amount is not None and db_transaction.projected_currency is None:
+                db_transaction.projected_currency = destination_account.currency
+            if db_transaction.original_amount is not None and db_transaction.original_currency is None:
+                db_transaction.original_currency = destination_account.currency
         else:
-            account.balance += old_amount
-        
-        # Apply new transaction
-        if db_transaction.transaction_type == TransactionType.CREDIT:
-            account.balance += db_transaction.amount
-        else:
-            account.balance -= db_transaction.amount
+            primary_account = db.query(Account).filter(
+                Account.id == db_transaction.account_id,
+                Account.user_id == current_user.id
+            ).first()
+            if not primary_account:
+                raise HTTPException(status_code=404, detail="Account not found")
+            if db_transaction.currency is None:
+                db_transaction.currency = primary_account.currency
+            if db_transaction.projected_amount is not None and db_transaction.projected_currency is None:
+                db_transaction.projected_currency = primary_account.currency
+            if db_transaction.original_amount is not None and db_transaction.original_currency is None:
+                db_transaction.original_currency = db_transaction.currency
+    except HTTPException:
+        db.rollback()
+        raise
+    
+    # Apply new balance effects if posted
+    if db_transaction.is_posted:
+        if db_transaction.transaction_type == TransactionType.CREDIT and primary_account:
+            primary_account.balance += db_transaction.amount
+        elif db_transaction.transaction_type == TransactionType.DEBIT and primary_account:
+            primary_account.balance -= db_transaction.amount
+        elif db_transaction.transaction_type == TransactionType.TRANSFER and primary_account and destination_account:
+            primary_account.balance -= db_transaction.amount + db_transaction.transfer_fee
+            destination_account.balance += db_transaction.amount
     
     db.commit()
     db.refresh(db_transaction)
@@ -149,18 +284,34 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db), curre
     
     db_transaction = db.query(Transaction).filter(
         Transaction.id == transaction_id,
-        Transaction.account_id.in_(user_account_ids)
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
     ).first()
     if not db_transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
-    # Update account balance
-    account = db.query(Account).filter(Account.id == db_transaction.account_id).first()
-    if account:
+    # Update account balances if posted
+    if db_transaction.is_posted:
         if db_transaction.transaction_type == TransactionType.CREDIT:
-            account.balance -= db_transaction.amount
-        else:
-            account.balance += db_transaction.amount
+            account = db.query(Account).filter(Account.id == db_transaction.account_id).first()
+            if account:
+                account.balance -= db_transaction.amount
+        elif db_transaction.transaction_type == TransactionType.DEBIT:
+            account = db.query(Account).filter(Account.id == db_transaction.account_id).first()
+            if account:
+                account.balance += db_transaction.amount
+        elif db_transaction.transaction_type == TransactionType.TRANSFER:
+            if db_transaction.transfer_from_account_id:
+                from_account = db.query(Account).filter(Account.id == db_transaction.transfer_from_account_id).first()
+                if from_account:
+                    from_account.balance += db_transaction.amount + (db_transaction.transfer_fee or 0.0)
+            if db_transaction.transfer_to_account_id:
+                to_account = db.query(Account).filter(Account.id == db_transaction.transfer_to_account_id).first()
+                if to_account:
+                    to_account.balance -= db_transaction.amount
     
     db.delete(db_transaction)
     db.commit()
@@ -180,7 +331,11 @@ async def upload_receipt(
     
     db_transaction = db.query(Transaction).filter(
         Transaction.id == transaction_id,
-        Transaction.account_id.in_(user_account_ids)
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
     ).first()
     if not db_transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -227,13 +382,17 @@ def get_transaction_summary(
     query = db.query(Transaction).filter(
         Transaction.transaction_date >= start_date,
         Transaction.transaction_date <= end_date,
-        Transaction.account_id.in_(user_account_ids)
+        or_(
+            Transaction.account_id.in_(user_account_ids),
+            Transaction.transfer_from_account_id.in_(user_account_ids),
+            Transaction.transfer_to_account_id.in_(user_account_ids)
+        )
     )
     
     if account_id:
         query = query.filter(Transaction.account_id == account_id)
     
-    transactions = query.all()
+    transactions = [t for t in query.all() if t.is_posted]
     
     total_income = sum(t.amount for t in transactions if t.transaction_type == TransactionType.CREDIT)
     total_expenses = sum(t.amount for t in transactions if t.transaction_type == TransactionType.DEBIT)
@@ -242,6 +401,8 @@ def get_transaction_summary(
     # Group by category
     category_summary = {}
     for transaction in transactions:
+        if transaction.transaction_type == TransactionType.TRANSFER:
+            continue
         if transaction.category_id:
             category = db.query(Category).filter(Category.id == transaction.category_id).first()
             category_name = category.name if category else "Uncategorized"

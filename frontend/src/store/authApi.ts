@@ -40,18 +40,19 @@ export interface UpdateUserRequest {
 }
 
 // Custom baseQuery with auth token
-const baseQueryWithAuth = async (args: any, api: any, extraOptions: any) => {
-  const token = localStorage.getItem('access_token')
-  
-  const result = await fetchBaseQuery({
-    baseUrl: '/api/v1',
-    prepareHeaders: (headers) => {
-      if (token) {
-        headers.set('authorization', `Bearer ${token}`)
-      }
-      return headers
-    },
-  })(args, api, extraOptions)
+const rawBaseQuery = fetchBaseQuery({
+  baseUrl: '/api/v1',
+  prepareHeaders: (headers) => {
+    const token = localStorage.getItem('access_token')
+    if (token) {
+      headers.set('authorization', `Bearer ${token}`)
+    }
+    return headers
+  },
+})
+
+const baseQueryWithAuth: typeof rawBaseQuery = async (args, api, extraOptions) => {
+  const result = await rawBaseQuery(args, api, extraOptions)
   
   // If we get a 401, clear the token and redirect to login
   if (result.error && 'status' in result.error && result.error.status === 401) {

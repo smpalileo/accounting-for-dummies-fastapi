@@ -2,6 +2,13 @@ import React, { useState } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import { Link } from '@tanstack/react-router'
 
+type ApiErrorPayload = {
+  data?: {
+    detail?: string
+  }
+  message?: string
+}
+
 interface SignupFormProps {
   onSuccess?: () => void
 }
@@ -68,8 +75,22 @@ export const SignupForm: React.FC<SignupFormProps> = ({ onSuccess }) => {
         default_currency: formData.defaultCurrency
       })
       onSuccess?.()
-    } catch (err: any) {
-      setError(err?.data?.detail || 'Registration failed. Please try again.')
+    } catch (err: unknown) {
+      if (typeof err === 'object' && err !== null) {
+        const apiError = err as ApiErrorPayload
+        const detail = apiError.data?.detail || apiError.message
+        if (detail) {
+          setError(detail)
+          setIsLoading(false)
+          return
+        }
+      }
+      if (err instanceof Error && err.message) {
+        setError(err.message)
+        setIsLoading(false)
+        return
+      }
+      setError('Registration failed. Please try again.')
     } finally {
       setIsLoading(false)
     }

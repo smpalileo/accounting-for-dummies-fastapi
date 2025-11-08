@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useGetAccountsQuery, useGetTransactionsQuery, useGetGoalsSummaryQuery, useGetTransactionSummaryQuery, useGetCategoriesQuery } from '../store/api'
-import { useState, useEffect } from 'react'
+import type { Transaction } from '../store/api'
+import { useState, useEffect, useMemo } from 'react'
 import { Navigation } from '../components/Navigation'
 import { useAuth } from '../contexts/AuthContext'
 import { useCurrency } from '../hooks/useCurrency'
@@ -20,33 +21,42 @@ export function Dashboard() {
     }
   }, [isAuthenticated, authLoading, navigate])
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
-  }
-
-  if (!isAuthenticated) {
-    return null // Will redirect
-  }
   const [selectedPeriod, setSelectedPeriod] = useState<'week' | 'month' | 'year'>('month')
   
   console.log('Dashboard component rendering...')
   
-  const { data: accounts, isLoading: accountsLoading, error: accountsError } = useGetAccountsQuery({ is_active: true })
-  const { data: transactions, isLoading: transactionsLoading, error: transactionsError } = useGetTransactionsQuery({})
-  const { data: goalsSummary, isLoading: goalsLoading, error: goalsError } = useGetGoalsSummaryQuery()
-  const { data: categories, isLoading: categoriesLoading, error: categoriesError } = useGetCategoriesQuery({ is_active: true })
+  const {
+    data: accountsData,
+    isLoading: accountsLoading,
+    error: accountsError,
+  } = useGetAccountsQuery({ is_active: true }, { skip: !isAuthenticated })
+  const {
+    data: transactionsData,
+    isLoading: transactionsLoading,
+    error: transactionsError,
+  } = useGetTransactionsQuery({}, { skip: !isAuthenticated })
+  const {
+    data: goalsSummary,
+    isLoading: goalsLoading,
+    error: goalsError,
+  } = useGetGoalsSummaryQuery(undefined, { skip: !isAuthenticated })
+  const {
+    data: categoriesData,
+    isLoading: categoriesLoading,
+    error: categoriesError,
+  } = useGetCategoriesQuery({ is_active: true }, { skip: !isAuthenticated })
   
   console.log('Dashboard hooks called:', { accountsLoading, transactionsLoading, goalsLoading, categoriesLoading })
-  
+
+  const accounts = accountsData ?? []
+  const transactions = transactionsData ?? []
+  const categories = categoriesData ?? []
+
   // Calculate date range for summary
-  const getDateRange = () => {
+  const dateRange = useMemo(() => {
     const now = new Date()
     const startDate = new Date()
-    
+
     switch (selectedPeriod) {
       case 'week':
         startDate.setDate(now.getDate() - 7)
@@ -58,15 +68,33 @@ export function Dashboard() {
         startDate.setFullYear(now.getFullYear() - 1)
         break
     }
-    
+
     return {
       start_date: startDate.toISOString(),
-      end_date: now.toISOString()
+      end_date: now.toISOString(),
     }
+  }, [selectedPeriod])
+
+  const {
+    data: periodSummary,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useGetTransactionSummaryQuery(dateRange, { skip: !isAuthenticated })
+
+  const allLoading =
+    accountsLoading && transactionsLoading && goalsLoading && categoriesLoading && summaryLoading
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    )
   }
-  
-  const dateRange = getDateRange()
-  const { data: periodSummary, isLoading: summaryLoading, error: summaryError } = useGetTransactionSummaryQuery(dateRange)
+
+  if (!isAuthenticated) {
+    return null // Will redirect
+  }
 
   // Debug: Log errors
   if (accountsError) console.error('Accounts error:', accountsError)
@@ -75,9 +103,24 @@ export function Dashboard() {
   if (categoriesError) console.error('Categories error:', categoriesError)
   if (summaryError) console.error('Summary error:', summaryError)
 
+  const getErrorDetail = (error: unknown): string | undefined => {
+    if (!error || typeof error !== 'object') {
+      return undefined
+    }
+    const withData = error as { data?: unknown }
+    if (withData.data && typeof withData.data === 'object' && withData.data !== null) {
+      const maybeDetail = (withData.data as { detail?: unknown }).detail
+      if (typeof maybeDetail === 'string') {
+        return maybeDetail
+      }
+    }
+    if ('message' in error && typeof (error as { message?: unknown }).message === 'string') {
+      return (error as { message: string }).message
+    }
+    return undefined
+  }
+
   // Show loading only if ALL are loading
-  const allLoading = accountsLoading && transactionsLoading && goalsLoading && categoriesLoading && summaryLoading
-  
   if (allLoading) {
     return (
       <div className="flex items-center justify-center min-h-96">
@@ -102,11 +145,11 @@ export function Dashboard() {
           <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Data</h3>
           <p className="text-gray-600 mb-4">There was an issue loading your financial data.</p>
           <div className="text-sm text-gray-500 space-y-1">
-            {accountsError && <p>• Accounts: {(accountsError as any)?.data?.detail || 'Failed to load'}</p>}
-            {transactionsError && <p>• Transactions: {(transactionsError as any)?.data?.detail || 'Failed to load'}</p>}
-            {goalsError && <p>• Goals: {(goalsError as any)?.data?.detail || 'Failed to load'}</p>}
-            {categoriesError && <p>• Categories: {(categoriesError as any)?.data?.detail || 'Failed to load'}</p>}
-            {summaryError && <p>• Summary: {(summaryError as any)?.data?.detail || 'Failed to load'}</p>}
+            {accountsError && <p>• Accounts: {getErrorDetail(accountsError) ?? 'Failed to load'}</p>}
+            {transactionsError && <p>• Transactions: {getErrorDetail(transactionsError) ?? 'Failed to load'}</p>}
+            {goalsError && <p>• Goals: {getErrorDetail(goalsError) ?? 'Failed to load'}</p>}
+            {categoriesError && <p>• Categories: {getErrorDetail(categoriesError) ?? 'Failed to load'}</p>}
+            {summaryError && <p>• Summary: {getErrorDetail(summaryError) ?? 'Failed to load'}</p>}
           </div>
           <button 
             onClick={() => window.location.reload()} 
@@ -121,18 +164,28 @@ export function Dashboard() {
 
   // Debug: Log data and states
   console.log('Dashboard states:', { 
-    accountsLoading, transactionsLoading, goalsLoading, categoriesLoading, summaryLoading,
-    accountsError, transactionsError, goalsError, categoriesError, summaryError,
-    accounts: accounts?.length, transactions: transactions?.length, categories: categories?.length, goalsSummary, periodSummary 
+    accountsLoading,
+    transactionsLoading,
+    goalsLoading,
+    categoriesLoading,
+    summaryLoading,
+    accountsError,
+    transactionsError,
+    goalsError,
+    categoriesError,
+    summaryError,
+    accounts: accounts.length,
+    transactions: transactions.length,
+    categories: categories.length,
+    goalsSummary,
+    periodSummary 
   })
 
-  const totalBalance = accounts?.reduce((sum, account) => sum + account.balance, 0) || 0
-  const activeAccounts = accounts?.filter(account => account.is_active) || []
+  const totalBalance = accounts.reduce((sum, account) => sum + account.balance, 0)
+  const activeAccounts = accounts.filter((account) => account.is_active)
 
   // Helper function to filter transactions by selected period
   const getTransactionsForPeriod = () => {
-    if (!transactions) return []
-    
     return transactions.filter(transaction => {
       const transactionDate = new Date(transaction.transaction_date)
       const startDate = new Date(dateRange.start_date)
@@ -148,7 +201,7 @@ export function Dashboard() {
 
   // Calculate expenditure by category for the selected period
   const getExpenditureByCategory = () => {
-    if (!periodTransactions || !categories) return []
+    if (periodTransactions.length === 0 || categories.length === 0) return []
     
     const filteredTransactions = periodTransactions.filter(transaction => 
       transaction.transaction_type === 'debit'
@@ -178,14 +231,16 @@ export function Dashboard() {
         const category = categories.find(cat => cat.id === categoryId)
         const transactions = categoryTransactions.get(categoryId) || []
         
+        const topTransactions: Transaction[] = [...transactions]
+          .sort((a, b) => b.amount - a.amount)
+          .slice(0, 3)
+
         return {
           id: categoryId,
           name: category?.name || 'Unknown',
           color: category?.color || '#6B7280',
           amount: total,
-          transactions: transactions
-            .sort((a: any, b: any) => b.amount - a.amount) // Sort by amount descending
-            .slice(0, 3) // Top 3 transactions
+          transactions: topTransactions,
         }
       })
       .sort((a, b) => b.amount - a.amount)
@@ -195,7 +250,7 @@ export function Dashboard() {
   const topExpenditureCategories = getExpenditureByCategory()
 
   // Calculate credit card due dates
-  const creditCards = accounts?.filter(account => account.account_type === 'credit' && account.is_active) || []
+  const creditCards = accounts.filter((account) => account.account_type === 'credit' && account.is_active)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -484,7 +539,7 @@ export function Dashboard() {
                     {/* Transactions */}
                     {category.transactions.length > 0 && (
                       <div className="ml-12 space-y-2">
-                        {category.transactions.map((transaction: any) => (
+                        {category.transactions.map((transaction: Transaction) => (
                           <div key={transaction.id} className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-md">
                             <div className="flex items-center space-x-2">
                               <div className="w-2 h-2 bg-gray-400 rounded-full"></div>

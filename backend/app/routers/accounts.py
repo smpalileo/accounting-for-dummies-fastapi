@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List, Optional
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
@@ -89,18 +90,36 @@ def get_account_balance(account_id: int, db: Session = Depends(get_db), current_
     # Calculate running balance from transactions
     from app.models.transaction import Transaction, TransactionType
     
+    from sqlalchemy import or_
+    
     transactions = db.query(Transaction).filter(
-        Transaction.account_id == account_id
+        or_(
+            Transaction.account_id == account_id,
+            Transaction.transfer_from_account_id == account_id,
+            Transaction.transfer_to_account_id == account_id
+        )
     ).order_by(Transaction.transaction_date).all()
     
     balance_history = []
     running_balance = 0.0
     
     for transaction in transactions:
-        if transaction.transaction_type == TransactionType.CREDIT:
+        if not transaction.is_posted:
+            continue
+        
+        if transaction.transaction_type == TransactionType.CREDIT and transaction.account_id == account_id:
             running_balance += transaction.amount
-        else:
+        elif transaction.transaction_type == TransactionType.DEBIT and transaction.account_id == account_id:
             running_balance -= transaction.amount
+        elif transaction.transaction_type == TransactionType.TRANSFER:
+            if transaction.transfer_from_account_id == account_id:
+                running_balance -= transaction.amount + (transaction.transfer_fee or 0.0)
+            elif transaction.transfer_to_account_id == account_id:
+                running_balance += transaction.amount
+            else:
+                continue
+        else:
+            continue
         
         balance_history.append({
             "date": transaction.transaction_date,

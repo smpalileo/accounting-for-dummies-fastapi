@@ -121,6 +121,13 @@ pnpm run dev
 ### Backend Development
 
 The backend follows the react-kit structure:
+- **Database migrations**: Use Alembic to manage schema changes. To set it up:
+  1. `cd backend && source .venv/bin/activate`
+  2. `alembic init migrations`
+  3. Update `alembic.ini` to point `sqlalchemy.url` at your `DATABASE_URL`, or configure it inside `migrations/env.py` using `settings.DATABASE_URL`.
+  4. Wire the models inside `migrations/env.py` by importing `Base` from `app.core.database`.
+  5. Generate migrations with `alembic revision --autogenerate -m "describe change"` and apply them via `alembic upgrade head`.
+  6. For a quick reset during development, you can still run `python -m app.core.init_db` to rebuild and reseed the database from scratch.
 - **Auto-router inclusion**: All files in `app/routers/` are automatically included
 - **Database seeding**: Initial data is loaded from `app/constants/seed_data.json`
 - **Type safety**: Pydantic v2 for request/response validation

@@ -8,6 +8,7 @@ import enum
 class TransactionType(str, enum.Enum):
     DEBIT = "debit"
     CREDIT = "credit"
+    TRANSFER = "transfer"
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -20,8 +21,17 @@ class Transaction(Base):
     
     amount = Column(Float, nullable=False)
     currency = Column(Enum(CurrencyType), default=CurrencyType.PHP)
+    projected_amount = Column(Float, nullable=True)
+    projected_currency = Column(Enum(CurrencyType), nullable=True)
+    original_amount = Column(Float, nullable=True)
+    original_currency = Column(Enum(CurrencyType), nullable=True)
+    exchange_rate = Column(Float, nullable=True)
+    transfer_fee = Column(Float, nullable=False, default=0.0)
     description = Column(Text, nullable=True)
     transaction_type = Column(Enum(TransactionType), nullable=False)
+    is_posted = Column(Boolean, default=True)
+    transfer_from_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    transfer_to_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     
     # Transaction dates
     transaction_date = Column(DateTime, nullable=False)
@@ -40,6 +50,12 @@ class Transaction(Base):
     
     # Relationships
     user = relationship("User", back_populates="transactions")
-    account = relationship("Account", back_populates="transactions")
+    account = relationship(
+        "Account",
+        back_populates="transactions",
+        foreign_keys=[account_id],
+    )
+    transfer_from_account = relationship("Account", foreign_keys=[transfer_from_account_id], backref="transfer_out_transactions")
+    transfer_to_account = relationship("Account", foreign_keys=[transfer_to_account_id], backref="transfer_in_transactions")
     category = relationship("Category", back_populates="transactions")
     allocation = relationship("Allocation", back_populates="transactions")
