@@ -12,13 +12,20 @@ class AccountType(str, enum.Enum):
     CHECKING = "checking"
     CREDIT = "credit"
 
+def _enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class Account(Base):
     __tablename__ = "accounts"
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     name = Column(String(100), nullable=False, index=True)
-    account_type = Column(Enum(AccountType), nullable=False)
+    account_type = Column(
+        Enum(AccountType, values_callable=_enum_values, name="accounttype"),
+        nullable=False,
+    )
     balance = Column(Float, default=0.0, nullable=False)
     currency = Column(Enum(CurrencyType), nullable=False, default=CurrencyType.PHP)
     description = Column(Text, nullable=True)
@@ -44,3 +51,4 @@ class Account(Base):
         lazy="selectin",
     )
     allocations = relationship("Allocation", back_populates="account")
+    budget_entries = relationship("BudgetEntry", back_populates="account")

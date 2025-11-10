@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from app.models.account import AccountType
 from app.models.user import CurrencyType
@@ -18,7 +18,7 @@ class AccountBase(BaseModel):
     days_until_due_date: Optional[int] = Field(21, ge=1, le=90)
 
 class AccountCreate(AccountBase):
-    pass
+    is_active: bool = True
 
 class AccountUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -40,3 +40,9 @@ class AccountResponse(AccountBase):
     
     class Config:
         from_attributes = True
+
+
+class AccountListResponse(BaseModel):
+    items: List[AccountResponse]
+    total: int
+    has_more: bool

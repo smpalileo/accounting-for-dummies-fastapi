@@ -1,11 +1,13 @@
 import json
+import copy
 import os
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
-from app.models import Account, Category, Transaction, Allocation, User
+from app.models import Account, Category, Transaction, Allocation, User, BudgetEntry
 from app.models.account import AccountType
-from app.models.transaction import TransactionType
-from app.models.allocation import AllocationType
+from app.models.transaction import TransactionType, RecurrenceFrequency
+from app.models.allocation import AllocationType, BudgetPeriodFrequency
+from app.models.budget_entry import BudgetEntryType
 from app.models.user import CurrencyType
 from datetime import datetime
 
@@ -87,14 +89,43 @@ def seed_database():
             # Convert allocation_type string to enum (convert uppercase to lowercase)
             allocation_type_str = allocation_data["allocation_type"].lower()
             allocation_data["allocation_type"] = AllocationType(allocation_type_str)
-            # Convert target_date string to datetime
             if allocation_data.get("target_date"):
                 allocation_data["target_date"] = datetime.fromisoformat(allocation_data["target_date"])
+            if allocation_data.get("period_frequency"):
+                allocation_data["period_frequency"] = BudgetPeriodFrequency(allocation_data["period_frequency"].lower())
+            if allocation_data.get("period_start"):
+                allocation_data["period_start"] = datetime.fromisoformat(allocation_data["period_start"])
+            if allocation_data.get("period_end"):
+                allocation_data["period_end"] = datetime.fromisoformat(allocation_data["period_end"])
             # Add user_id to allocation data
             allocation_data["user_id"] = default_user.id
             # Map account_id to actual account ID
             original_account_id = allocation_data["account_id"]
             allocation_data["account_id"] = account_id_mapping[original_account_id]
+            config = allocation_data.get("configuration")
+            if config:
+                config_copy = copy.deepcopy(config)
+                if isinstance(config_copy.get("category_ids"), list):
+                    config_copy["category_ids"] = [
+                        category_id_mapping[cat_id]
+                        for cat_id in config_copy["category_ids"]
+                        if cat_id in category_id_mapping
+                    ]
+                if isinstance(config_copy.get("account_ids"), list):
+                    config_copy["account_ids"] = [
+                        account_id_mapping[acct_id]
+                        for acct_id in config_copy["account_ids"]
+                        if acct_id in account_id_mapping
+                    ]
+                if config_copy.get("savings_category_id"):
+                    category_ref = config_copy["savings_category_id"]
+                    if category_ref in category_id_mapping:
+                        config_copy["savings_category_id"] = category_id_mapping[category_ref]
+                if config_copy.get("start_date"):
+                    config_copy["start_date"] = datetime.fromisoformat(config_copy["start_date"])
+                if config_copy.get("end_date"):
+                    config_copy["end_date"] = datetime.fromisoformat(config_copy["end_date"])
+                allocation_data["configuration"] = config_copy
             allocation = Allocation(**allocation_data)
             db.add(allocation)
             allocations.append(allocation)
@@ -105,6 +136,36 @@ def seed_database():
             db.refresh(allocation)
             allocation_id_mapping[i + 1] = allocation.id  # Original seed data uses 1-based indexing
         
+        # Create budget entries (recurring income/expenses)
+        budget_entries = []
+        budget_entry_id_mapping = {}
+        for i, entry_data in enumerate(seed_data.get("budget_entries", [])):
+            entry_copy = entry_data.copy()
+            entry_copy["user_id"] = default_user.id
+            entry_copy["entry_type"] = BudgetEntryType(entry_copy["entry_type"].lower())
+            entry_copy["currency"] = CurrencyType(entry_copy.get("currency", default_user.default_currency.name))
+            entry_copy["cadence"] = RecurrenceFrequency(entry_copy.get("cadence", "monthly").lower())
+            entry_copy["next_occurrence"] = datetime.fromisoformat(entry_copy["next_occurrence"])
+            entry_copy["end_mode"] = entry_copy.get("end_mode", "indefinite").lower()
+            if entry_copy.get("end_date"):
+                entry_copy["end_date"] = datetime.fromisoformat(entry_copy["end_date"])
+            if entry_copy.get("max_occurrences") is not None:
+                entry_copy["max_occurrences"] = int(entry_copy["max_occurrences"])
+            if entry_copy.get("account_id"):
+                entry_copy["account_id"] = account_id_mapping[entry_copy["account_id"]]
+            if entry_copy.get("category_id"):
+                entry_copy["category_id"] = category_id_mapping[entry_copy["category_id"]]
+            if entry_copy.get("allocation_id"):
+                entry_copy["allocation_id"] = allocation_id_mapping[entry_copy["allocation_id"]]
+            budget_entry = BudgetEntry(**entry_copy)
+            db.add(budget_entry)
+            budget_entries.append(budget_entry)
+        if budget_entries:
+            db.commit()
+            for i, entry in enumerate(budget_entries):
+                db.refresh(entry)
+                budget_entry_id_mapping[i + 1] = entry.id
+
         # Create transactions associated with the default user
         for transaction_data in seed_data["transactions"]:
             original_account_id = transaction_data["account_id"]
@@ -124,6 +185,8 @@ def seed_database():
                 transaction_data["category_id"] = category_id_mapping[original_category_id]
             if transaction_data.get("allocation_id"):
                 transaction_data["allocation_id"] = allocation_id_mapping[transaction_data["allocation_id"]]
+            if transaction_data.get("budget_entry_id"):
+                transaction_data["budget_entry_id"] = budget_entry_id_mapping[transaction_data["budget_entry_id"]]
             if transaction_data.get("transfer_from_account_id"):
                 transaction_data["transfer_from_account_id"] = account_id_mapping[
                     transaction_data["transfer_from_account_id"]
@@ -141,6 +204,15 @@ def seed_database():
                 transaction_data["projected_currency"] = account_ref.currency
             if transaction_data.get("transfer_fee") is None:
                 transaction_data["transfer_fee"] = 0.0
+            recurrence_frequency = transaction_data.get("recurrence_frequency")
+            if recurrence_frequency:
+                transaction_data["recurrence_frequency"] = RecurrenceFrequency(
+                    recurrence_frequency.lower()
+                )
+            elif transaction_data.get("is_recurring"):
+                transaction_data["recurrence_frequency"] = RecurrenceFrequency.MONTHLY
+            else:
+                transaction_data["recurrence_frequency"] = None
             transaction = Transaction(**transaction_data)
             db.add(transaction)
         db.commit()

@@ -1,9 +1,103 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useGetTransactionsQuery, useGetAccountsQuery, useGetCategoriesQuery, useCreateTransactionMutation, useUpdateTransactionMutation, useDeleteTransactionMutation } from '../store/api'
-import { useState, useEffect, useMemo } from 'react'
+import { useLazyGetTransactionsQuery, useGetAccountsQuery, useGetCategoriesQuery, useCreateTransactionMutation, useUpdateTransactionMutation, useDeleteTransactionMutation } from '../store/api'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import type { Transaction } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
 import { formatCurrency, getCurrencySymbol, CurrencyCode, CURRENCY_CONFIGS } from '../utils/currency'
+
+type RecurrenceFrequency = 'monthly' | 'quarterly' | 'semi_annual' | 'annual'
+
+const TRANSACTION_TYPE_LABELS: Record<Transaction['transaction_type'], string> = {
+  credit: 'Income',
+  debit: 'Expense',
+  transfer: 'Transfer',
+}
+
+const RECURRENCE_LABELS: Record<RecurrenceFrequency, string> = {
+  monthly: 'Monthly',
+  quarterly: 'Quarterly',
+  semi_annual: 'Semi-Annual',
+  annual: 'Annual',
+}
+
+const getOrdinalSuffix = (day: number) => {
+  if (day % 100 >= 11 && day % 100 <= 13) {
+    return 'th'
+  }
+  switch (day % 10) {
+    case 1:
+      return 'st'
+    case 2:
+      return 'nd'
+    case 3:
+      return 'rd'
+    default:
+      return 'th'
+  }
+}
+
+const formatDateWithOrdinal = (date: Date) => {
+  if (Number.isNaN(date.getTime())) {
+    return 'Invalid date'
+  }
+  const month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date)
+  const day = date.getDate()
+  const year = date.getFullYear()
+  return `${month} ${day}${getOrdinalSuffix(day)}, ${year}`
+}
+
+const formatRelativeDate = (dateString: string) => {
+  const date = new Date(dateString)
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown date'
+  }
+  const today = new Date()
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const diffInMs = startOfToday.getTime() - startOfDate.getTime()
+  const diffInDays = Math.round(diffInMs / (1000 * 60 * 60 * 24))
+
+  if (diffInDays === 0) {
+    return 'Today'
+  }
+  if (diffInDays === 1) {
+    return 'Yesterday'
+  }
+  if (diffInDays === -1) {
+    return 'Tomorrow'
+  }
+
+  return formatDateWithOrdinal(date)
+}
+
+const formatRecurrenceLabel = (frequency?: string) => {
+  if (!frequency) {
+    return 'Recurring'
+  }
+  const key = frequency as RecurrenceFrequency
+  return RECURRENCE_LABELS[key] ?? 'Recurring'
+}
+
+const getMonthStart = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1)
+
+const getMonthEnd = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0)
+
+const isSameMonth = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+
+const formatMonthYear = (date: Date) =>
+  date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+
+const formatDateInput = (date: Date) => {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const parseDateInput = (value: string) => {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, (month || 1) - 1, day || 1)
+}
 
 export const Route = createFileRoute('/transactions')({
   component: TransactionsPage,
@@ -13,7 +107,7 @@ type TransactionFormState = {
   account_id: number
   category_id?: number
   allocation_id?: number
-  amount: number
+  amount?: number
   currency: CurrencyCode
   projected_amount?: number
   projected_currency?: CurrencyCode
@@ -27,8 +121,19 @@ type TransactionFormState = {
   posting_date?: string
   is_posted: boolean
   is_recurring: boolean
+  recurrence_frequency: RecurrenceFrequency
   transfer_from_account_id?: number
   transfer_to_account_id?: number
+}
+
+type PostingFormState = {
+  visible: boolean
+  amount: string
+  error: string | null
+  projectedAmount: number | null
+  projectedCurrency: CurrencyCode
+  accountCurrency: CurrencyCode
+  needsConversion: boolean
 }
 
 export function TransactionsPage() {
@@ -46,10 +151,10 @@ export function TransactionsPage() {
     account_id: 0,
     category_id: undefined,
     allocation_id: undefined,
-    amount: 0,
+    amount: undefined,
     currency: fallbackCurrency,
     projected_amount: undefined,
-    projected_currency: undefined,
+    projected_currency: fallbackCurrency,
     original_amount: undefined,
     original_currency: undefined,
     exchange_rate: undefined,
@@ -60,6 +165,7 @@ export function TransactionsPage() {
     posting_date: undefined,
     is_posted: true,
     is_recurring: false,
+    recurrence_frequency: 'monthly',
     transfer_from_account_id: undefined,
     transfer_to_account_id: undefined,
     ...overrides,
@@ -67,18 +173,206 @@ export function TransactionsPage() {
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null)
+  const [isActionModalOpen, setIsActionModalOpen] = useState(false)
+  const [actionTransaction, setActionTransaction] = useState<Transaction | null>(null)
+  const [postingFormState, setPostingFormState] = useState<PostingFormState>({
+    visible: false,
+    amount: '',
+    error: null,
+    projectedAmount: null,
+    projectedCurrency: fallbackCurrency,
+    accountCurrency: fallbackCurrency,
+    needsConversion: false,
+  })
   const [searchTerm, setSearchTerm] = useState('')
-  const [filterAccount, setFilterAccount] = useState<number | ''>('')
-  const [filterType, setFilterType] = useState<Transaction['transaction_type'] | ''>('')
+  const [showFilters, setShowFilters] = useState(false)
+  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<number[]>([])
+  const [selectedTypes, setSelectedTypes] = useState<Transaction['transaction_type'][]>([])
+  const resetPostingFormState = useCallback(() => {
+    setPostingFormState({
+      visible: false,
+      amount: '',
+      error: null,
+      projectedAmount: null,
+      projectedCurrency: fallbackCurrency,
+      accountCurrency: fallbackCurrency,
+      needsConversion: false,
+    })
+  }, [fallbackCurrency])
+  const defaultMonthStartRef = useRef(getMonthStart(new Date()))
+  const defaultMonthEndRef = useRef(getMonthEnd(defaultMonthStartRef.current))
+  const [currentMonth, setCurrentMonth] = useState<Date>(defaultMonthStartRef.current)
+  const [startDate, setStartDate] = useState<string>(() => formatDateInput(defaultMonthStartRef.current))
+  const [endDate, setEndDate] = useState<string>(() => formatDateInput(defaultMonthEndRef.current))
+  const [isCustomRange, setIsCustomRange] = useState(false)
   const [formData, setFormData] = useState<TransactionFormState>(() => createInitialFormState())
   const currencyOptions = useMemo(() => Object.keys(CURRENCY_CONFIGS) as CurrencyCode[], [])
-
-  const { data: transactionsData, isLoading: isTransactionsLoading } = useGetTransactionsQuery(
-    {},
-    { skip: !isAuthenticated }
+  const transactionTypeOptions = useMemo(
+    () => [
+      { value: 'credit' as Transaction['transaction_type'], label: 'Income' },
+      { value: 'debit' as Transaction['transaction_type'], label: 'Expense' },
+      { value: 'transfer' as Transaction['transaction_type'], label: 'Transfer' },
+    ],
+    []
   )
+  const recurrenceOptions = useMemo(
+    () => [
+      { value: 'monthly' as RecurrenceFrequency, label: 'Monthly' },
+      { value: 'quarterly' as RecurrenceFrequency, label: 'Quarterly' },
+      { value: 'semi_annual' as RecurrenceFrequency, label: 'Semi-Annual' },
+      { value: 'annual' as RecurrenceFrequency, label: 'Annual' },
+    ],
+    []
+  )
+
+  const resetFilters = useCallback(() => {
+    const freshStart = getMonthStart(new Date())
+    const freshEnd = getMonthEnd(freshStart)
+    defaultMonthStartRef.current = freshStart
+    defaultMonthEndRef.current = freshEnd
+    setSearchTerm('')
+    setSelectedAccountIds([])
+    setSelectedCategoryIds([])
+    setSelectedTypes([])
+    setCurrentMonth(freshStart)
+    setStartDate(formatDateInput(freshStart))
+    setEndDate(formatDateInput(freshEnd))
+    setIsCustomRange(false)
+  }, [])
+
+  const defaultMonthStartString = formatDateInput(defaultMonthStartRef.current)
+  const defaultMonthEndString = formatDateInput(defaultMonthEndRef.current)
+
+  const hasActiveFilters = useMemo(
+    () =>
+      Boolean(
+        searchTerm.trim() ||
+          selectedAccountIds.length ||
+          selectedCategoryIds.length ||
+          selectedTypes.length ||
+          isCustomRange ||
+          startDate !== defaultMonthStartString ||
+          endDate !== defaultMonthEndString
+      ),
+    [
+      searchTerm,
+      selectedAccountIds,
+      selectedCategoryIds,
+      selectedTypes,
+      isCustomRange,
+      startDate,
+      endDate,
+      defaultMonthStartString,
+      defaultMonthEndString,
+    ]
+  )
+
+  const dateRangeSummary = useMemo(() => {
+    if (!startDate && !endDate) {
+      return 'All dates'
+    }
+    const startLabel = startDate ? formatDateWithOrdinal(parseDateInput(startDate)) : 'Beginning'
+    const endLabel = endDate ? formatDateWithOrdinal(parseDateInput(endDate)) : 'Present'
+    return `${startLabel} → ${endLabel}`
+  }, [startDate, endDate])
+
+  const todayMonthStart = useMemo(() => getMonthStart(new Date()), [])
+  const currentMonthLabel = useMemo(() => formatMonthYear(currentMonth), [currentMonth])
+  const isAtCurrentMonth = useMemo(
+    () => isSameMonth(currentMonth, todayMonthStart),
+    [currentMonth, todayMonthStart]
+  )
+
+  const handleMonthChange = useCallback(
+    (direction: 'prev' | 'next') => {
+      setIsCustomRange(false)
+      setCurrentMonth((prev) => {
+        if (direction === 'next' && isSameMonth(prev, todayMonthStart)) {
+          return prev
+        }
+        const next = new Date(prev)
+        next.setMonth(prev.getMonth() + (direction === 'next' ? 1 : -1))
+        return getMonthStart(next)
+      })
+    },
+    [todayMonthStart]
+  )
+
+  const toggleAccountFilter = useCallback((id: number) => {
+    setSelectedAccountIds((prev) =>
+      prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]
+    )
+  }, [])
+
+  const toggleCategoryFilter = useCallback((id: number) => {
+    setSelectedCategoryIds((prev) =>
+      prev.includes(id) ? prev.filter((value) => value !== id) : [...prev, id]
+    )
+  }, [])
+
+  const toggleTypeFilter = useCallback((value: Transaction['transaction_type']) => {
+    setSelectedTypes((prev) =>
+      prev.includes(value) ? prev.filter((item) => item !== value) : [...prev, value]
+    )
+  }, [])
+
+  const handleCustomStartDateChange = useCallback((value: string) => {
+    setIsCustomRange(true)
+    setStartDate(value)
+    if (value) {
+      setCurrentMonth(getMonthStart(parseDateInput(value)))
+    }
+  }, [])
+
+  const handleCustomEndDateChange = useCallback((value: string) => {
+    setIsCustomRange(true)
+    setEndDate(value)
+  }, [])
+
+  useEffect(() => {
+    if (isCustomRange) {
+      return
+    }
+    const nextStart = formatDateInput(currentMonth)
+    const nextEnd = formatDateInput(getMonthEnd(currentMonth))
+    setStartDate((prev) => (prev === nextStart ? prev : nextStart))
+    setEndDate((prev) => (prev === nextEnd ? prev : nextEnd))
+  }, [currentMonth, isCustomRange])
+
+  const actionModalMeta = useMemo(() => {
+    if (!actionTransaction) {
+      return null
+    }
+    return {
+      transactionDate: formatDateWithOrdinal(new Date(actionTransaction.transaction_date)),
+      transactionRelative: formatRelativeDate(actionTransaction.transaction_date),
+      postingDate: actionTransaction.posting_date
+        ? formatDateWithOrdinal(new Date(actionTransaction.posting_date))
+        : 'Pending',
+      postingRelative: actionTransaction.posting_date ? formatRelativeDate(actionTransaction.posting_date) : null,
+      typeLabel: TRANSACTION_TYPE_LABELS[actionTransaction.transaction_type],
+      recurrenceLabel: actionTransaction.is_recurring
+        ? formatRecurrenceLabel(actionTransaction.recurrence_frequency)
+        : null,
+    }
+  }, [actionTransaction])
+
+  const toISODateTime = useCallback((dateValue: string, endOfDay = false) => {
+    if (!dateValue) {
+      return undefined
+    }
+    const [year, month, day] = dateValue.split('-').map(Number)
+    if (!year || !month || !day) {
+      return undefined
+    }
+    const date = new Date(year, month - 1, day, endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0)
+    return date.toISOString()
+  }, [])
+ 
+  const [triggerTransactions] = useLazyGetTransactionsQuery()
   const { data: accountsData, isLoading: isAccountsLoading } = useGetAccountsQuery(
-    { is_active: true },
+    { is_active: true, limit: 100 },
     { skip: !isAuthenticated }
   )
   const { data: categoriesData, isLoading: isCategoriesLoading } = useGetCategoriesQuery(
@@ -90,9 +384,143 @@ export function TransactionsPage() {
   const [updateTransaction] = useUpdateTransactionMutation()
   const [deleteTransaction] = useDeleteTransactionMutation()
 
-  const accounts = useMemo(() => accountsData ?? [], [accountsData])
+  const accounts = useMemo(() => accountsData?.items ?? [], [accountsData])
   const categories = useMemo(() => categoriesData ?? [], [categoriesData])
-  const transactions = useMemo(() => transactionsData ?? [], [transactionsData])
+  const limit = 10
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [totalTransactions, setTotalTransactions] = useState(0)
+  const [hasMoreTransactions, setHasMoreTransactions] = useState(true)
+  const offsetRef = useRef(0)
+  const loadMoreObserver = useRef<IntersectionObserver | null>(null)
+  const [isInitialLoading, setIsInitialLoading] = useState(true)
+  const [isFetchingMore, setIsFetchingMore] = useState(false)
+
+  const loadTransactions = useCallback(
+    async (reset = false) => {
+      if (!isAuthenticated) {
+        return
+      }
+
+      const nextOffset = reset ? 0 : offsetRef.current
+      const params: {
+        account_ids?: number[]
+        category_ids?: number[]
+        allocation_id?: number
+        transaction_types?: string[]
+        start_date?: string
+        end_date?: string
+        search?: string
+        limit: number
+        offset: number
+      } = {
+        limit,
+        offset: nextOffset,
+      }
+      if (selectedAccountIds.length > 0) {
+        params.account_ids = selectedAccountIds
+      }
+      if (selectedTypes.length > 0) {
+        params.transaction_types = selectedTypes
+      }
+      if (selectedCategoryIds.length > 0) {
+        params.category_ids = selectedCategoryIds
+      }
+      if (searchTerm.trim()) {
+        params.search = searchTerm.trim()
+      }
+      if (startDate) {
+        const isoStart = toISODateTime(startDate)
+        if (isoStart) {
+          params.start_date = isoStart
+        }
+      }
+      if (endDate) {
+        const isoEnd = toISODateTime(endDate, true)
+        if (isoEnd) {
+          params.end_date = isoEnd
+        }
+      }
+
+      try {
+        if (reset) {
+          offsetRef.current = 0
+          setIsInitialLoading(true)
+          setTransactions([])
+        } else {
+          setIsFetchingMore(true)
+        }
+
+        const result = await triggerTransactions(params).unwrap()
+        offsetRef.current = nextOffset + result.items.length
+        setTransactions((prev) => (reset ? result.items : [...prev, ...result.items]))
+        setTotalTransactions(result.total)
+        setHasMoreTransactions(result.has_more)
+      } catch (error) {
+        console.error('Error loading transactions:', error)
+        if (reset) {
+          setTransactions([])
+          setTotalTransactions(0)
+          setHasMoreTransactions(false)
+        }
+      } finally {
+        if (reset) {
+          setIsInitialLoading(false)
+        } else {
+          setIsFetchingMore(false)
+        }
+      }
+    },
+    [
+      selectedAccountIds,
+      selectedTypes,
+      selectedCategoryIds,
+      searchTerm,
+      startDate,
+      endDate,
+      toISODateTime,
+      triggerTransactions,
+      isAuthenticated,
+    ]
+  )
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) {
+      return
+    }
+    loadTransactions(true)
+  }, [authLoading, isAuthenticated, loadTransactions])
+
+  useEffect(() => {
+    if (!isActionModalOpen) {
+      resetPostingFormState()
+    }
+  }, [isActionModalOpen, resetPostingFormState])
+
+  useEffect(() => {
+    return () => {
+      loadMoreObserver.current?.disconnect()
+    }
+  }, [])
+
+  const sentinelRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (loadMoreObserver.current) {
+        loadMoreObserver.current.disconnect()
+      }
+      if (!node) {
+        return
+      }
+
+      loadMoreObserver.current = new IntersectionObserver((entries) => {
+        if (entries[0]?.isIntersecting && hasMoreTransactions && !isFetchingMore && !isInitialLoading) {
+          loadTransactions(false)
+        }
+      })
+
+      loadMoreObserver.current.observe(node)
+    },
+    [hasMoreTransactions, isFetchingMore, isInitialLoading, loadTransactions]
+  )
 
   const transferDestinationOptions = useMemo(
     () =>
@@ -102,7 +530,14 @@ export function TransactionsPage() {
       ),
     [accounts, formData.account_id, formData.transfer_from_account_id]
   )
-  const isLoading = isTransactionsLoading || isAccountsLoading || isCategoriesLoading
+
+  const isLoading = isInitialLoading || isAccountsLoading || isCategoriesLoading
+
+  const orderedTransactions = useMemo(() => {
+    const posted = transactions.filter((transaction) => transaction.is_posted)
+    const pending = transactions.filter((transaction) => !transaction.is_posted)
+    return [...posted, ...pending]
+  }, [transactions])
 
   if (authLoading) {
     return (
@@ -118,31 +553,23 @@ export function TransactionsPage() {
 
   const formCurrencySymbol = getCurrencySymbol(formData.currency)
   const resolvedProjectedCurrency = formData.projected_currency ?? formData.currency
-  const resolvedOriginalCurrency = formData.original_currency ?? formData.currency
   const projectedCurrencySymbol = getCurrencySymbol(resolvedProjectedCurrency)
-  const originalCurrencySymbol = getCurrencySymbol(resolvedOriginalCurrency)
 
-  // Filter transactions based on search and filters
-  const filteredTransactions = transactions.filter((transaction) => {
-    const matchesSearch = transaction.description?.toLowerCase().includes(searchTerm.toLowerCase()) || false
-    const matchesAccount =
-      filterAccount === '' ||
-      transaction.account_id === filterAccount ||
-      transaction.transfer_from_account_id === filterAccount ||
-      transaction.transfer_to_account_id === filterAccount
-    const matchesType = filterType === '' || transaction.transaction_type === filterType
-    
-    return matchesSearch && matchesAccount && matchesType
-  })
-
-  const handleAccountChange = (value: number) => {
+  const handleAccountSelect = (value: number) => {
     const accountId = Number.isNaN(value) ? 0 : value
     const nextAccount = accounts.find((account) => account.id === accountId)
     setFormData((prev) => ({
       ...prev,
       account_id: accountId,
       currency: nextAccount ? (nextAccount.currency as CurrencyCode) : fallbackCurrency,
-      transfer_from_account_id: prev.transaction_type === 'transfer' ? accountId || prev.transfer_from_account_id : prev.transfer_from_account_id,
+      projected_currency:
+        prev.projected_currency ?? (nextAccount ? (nextAccount.currency as CurrencyCode) : fallbackCurrency),
+      transfer_from_account_id:
+        prev.transaction_type === 'transfer' ? accountId || prev.transfer_from_account_id : prev.transfer_from_account_id,
+      transfer_to_account_id:
+        prev.transaction_type === 'transfer' && prev.transfer_to_account_id === accountId
+          ? undefined
+          : prev.transfer_to_account_id,
     }))
   }
 
@@ -169,6 +596,18 @@ export function TransactionsPage() {
     })
   }
 
+  const openActionModal = (transaction: Transaction) => {
+    resetPostingFormState()
+    setActionTransaction(transaction)
+    setIsActionModalOpen(true)
+  }
+
+  const closeActionModal = () => {
+    setIsActionModalOpen(false)
+    setActionTransaction(null)
+    resetPostingFormState()
+  }
+
   const resetForm = () => {
     setFormData(createInitialFormState())
     setEditingTransaction(null)
@@ -177,43 +616,83 @@ export function TransactionsPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      const baseCurrency = formData.currency ?? fallbackCurrency
-      const hasProjectedAmount = formData.projected_amount !== undefined && !Number.isNaN(formData.projected_amount)
-      const hasOriginalAmount = formData.original_amount !== undefined && !Number.isNaN(formData.original_amount)
-      const hasExchangeRate = formData.exchange_rate !== undefined && !Number.isNaN(formData.exchange_rate)
+      if (!formData.account_id) {
+        alert('Please select an account for this transaction.')
+        return
+      }
+      if (formData.transaction_type === 'transfer' && !formData.transfer_to_account_id) {
+        alert('Please select a destination account for this transfer.')
+        return
+      }
+
+      const selectedAccount = accounts.find((account) => account.id === formData.account_id)
+      const accountCurrency = (selectedAccount?.currency as CurrencyCode) || fallbackCurrency
+      const projectedCurrency = formData.projected_currency ?? accountCurrency
+
+      let projectedAmount = formData.projected_amount
+      if (!formData.is_posted) {
+        if (!projectedAmount || projectedAmount <= 0) {
+          alert('Please enter an amount greater than zero.')
+          return
+        }
+      }
+
+      let actualAmount = formData.amount
+      if (formData.is_posted) {
+        if (actualAmount === undefined || actualAmount <= 0) {
+          alert('Please enter the actual amount posted to the account.')
+          return
+        }
+        if (!projectedAmount || projectedAmount <= 0) {
+          projectedAmount = actualAmount
+        }
+      } else {
+        actualAmount = projectedAmount
+      }
+
       const payload: Record<string, unknown> = {
-        ...formData,
-        currency: baseCurrency,
+        account_id: formData.account_id,
+        amount: actualAmount,
+        currency: accountCurrency,
+        description: formData.description,
+        transaction_type: formData.transaction_type,
         transaction_date: new Date(formData.transaction_date).toISOString(),
-        posting_date: formData.posting_date ? new Date(formData.posting_date).toISOString() : undefined,
-        transfer_fee: formData.transfer_fee || 0,
+        posting_date:
+          formData.is_posted && formData.posting_date
+            ? new Date(formData.posting_date).toISOString()
+            : formData.is_posted
+            ? new Date().toISOString()
+            : undefined,
+        is_posted: formData.is_posted,
+        is_recurring: formData.is_recurring,
+        transfer_fee: formData.transaction_type === 'transfer' ? formData.transfer_fee || 0 : 0,
         transfer_from_account_id:
           formData.transaction_type === 'transfer'
             ? formData.transfer_from_account_id ?? formData.account_id
             : undefined,
         transfer_to_account_id:
-          formData.transaction_type === 'transfer'
-            ? formData.transfer_to_account_id
-            : undefined,
+          formData.transaction_type === 'transfer' ? formData.transfer_to_account_id : undefined,
         category_id: formData.transaction_type === 'transfer' ? undefined : formData.category_id,
         allocation_id: formData.transaction_type === 'transfer' ? undefined : formData.allocation_id,
-        projected_amount: hasProjectedAmount ? formData.projected_amount : undefined,
-        projected_currency: hasProjectedAmount
-          ? formData.projected_currency ?? baseCurrency
-          : undefined,
-        original_amount: hasOriginalAmount ? formData.original_amount : undefined,
-        original_currency: hasOriginalAmount
-          ? formData.original_currency ?? baseCurrency
-          : undefined,
-        exchange_rate: hasExchangeRate ? formData.exchange_rate : undefined,
-      }
-      if (!payload.transfer_to_account_id) {
-        payload.transfer_to_account_id = undefined
-      }
-      if (!hasExchangeRate) {
-        payload.exchange_rate = undefined
+        projected_amount: projectedAmount ?? undefined,
+        projected_currency: projectedCurrency,
+        recurrence_frequency: formData.is_recurring ? formData.recurrence_frequency : undefined,
       }
 
+      if (formData.is_posted) {
+        if (projectedAmount && projectedAmount > 0) {
+          payload.exchange_rate =
+            projectedCurrency !== accountCurrency || actualAmount !== projectedAmount
+              ? (actualAmount as number) / projectedAmount
+              : 1
+        } else {
+          payload.exchange_rate = undefined
+        }
+      } else {
+        payload.exchange_rate = undefined
+        payload.posting_date = undefined
+      }
+      
       if (editingTransaction) {
         await updateTransaction({ id: editingTransaction.id, data: payload }).unwrap()
         setEditingTransaction(null)
@@ -222,6 +701,7 @@ export function TransactionsPage() {
       }
       resetForm()
       setIsCreateModalOpen(false)
+      await loadTransactions(true)
     } catch (error) {
       console.error('Error saving transaction:', error)
     }
@@ -231,25 +711,29 @@ export function TransactionsPage() {
     setEditingTransaction(transaction)
     setFormData(
       createInitialFormState({
-        account_id: transaction.account_id,
+      account_id: transaction.account_id,
         category_id: transaction.category_id ?? undefined,
         allocation_id: transaction.allocation_id ?? undefined,
-        amount: transaction.amount,
+      amount: transaction.amount,
         currency: (transaction.currency as CurrencyCode) || fallbackCurrency,
         projected_amount: transaction.projected_amount ?? undefined,
-        projected_currency: (transaction.projected_currency as CurrencyCode) ?? undefined,
+        projected_currency:
+          (transaction.projected_currency as CurrencyCode) ||
+          (transaction.currency as CurrencyCode) ||
+          fallbackCurrency,
         original_amount: transaction.original_amount ?? undefined,
         original_currency: (transaction.original_currency as CurrencyCode) ?? undefined,
         exchange_rate: transaction.exchange_rate ?? undefined,
         transfer_fee: transaction.transfer_fee ?? 0,
-        description: transaction.description || '',
-        transaction_type: transaction.transaction_type,
-        transaction_date: new Date(transaction.transaction_date).toISOString().split('T')[0],
+      description: transaction.description || '',
+      transaction_type: transaction.transaction_type,
+      transaction_date: new Date(transaction.transaction_date).toISOString().split('T')[0],
         posting_date: transaction.posting_date
           ? new Date(transaction.posting_date).toISOString().split('T')[0]
           : undefined,
         is_posted: transaction.is_posted,
         is_recurring: transaction.is_recurring,
+        recurrence_frequency: transaction.recurrence_frequency ?? 'monthly',
         transfer_from_account_id: transaction.transaction_type === 'transfer'
           ? transaction.transfer_from_account_id ?? transaction.account_id
           : undefined,
@@ -265,9 +749,184 @@ export function TransactionsPage() {
     if (confirm('Are you sure you want to delete this transaction?')) {
       try {
         await deleteTransaction(transactionId).unwrap()
+        if (actionTransaction?.id === transactionId) {
+          closeActionModal()
+        }
+        await loadTransactions(true)
       } catch (error) {
         console.error('Error deleting transaction:', error)
       }
+    }
+  }
+
+  const handleMarkPostedFromModal = async (transaction: Transaction, actualAmount: number, exchangeRate?: number) => {
+    const account = accounts.find((item) => item.id === transaction.account_id)
+    const accountCurrency = (account?.currency as CurrencyCode) || fallbackCurrency
+    const timestamp = new Date().toISOString()
+    const payload: Record<string, unknown> = {
+      is_posted: true,
+      posting_date: timestamp,
+      amount: actualAmount,
+      currency: accountCurrency,
+      exchange_rate: exchangeRate,
+    }
+    await updateTransaction({ id: transaction.id, data: payload }).unwrap()
+    const updatedTransaction: Transaction = {
+      ...transaction,
+      is_posted: true,
+      posting_date: timestamp,
+      amount: actualAmount,
+      currency: accountCurrency,
+      exchange_rate: exchangeRate,
+    }
+    setActionTransaction(updatedTransaction)
+    setTransactions((prev) => prev.map((item) => (item.id === transaction.id ? updatedTransaction : item)))
+    resetPostingFormState()
+  }
+
+  const handleRevertPostedFromModal = async (transaction: Transaction) => {
+    const account = accounts.find((item) => item.id === transaction.account_id)
+    const accountCurrency = (account?.currency as CurrencyCode) || fallbackCurrency
+    const payload: Record<string, unknown> = {
+      is_posted: false,
+      posting_date: undefined,
+      amount: transaction.projected_amount ?? transaction.amount,
+      currency: accountCurrency,
+      exchange_rate: undefined,
+    }
+    await updateTransaction({ id: transaction.id, data: payload }).unwrap()
+    const updatedTransaction: Transaction = {
+      ...transaction,
+      is_posted: false,
+      posting_date: undefined,
+      amount: payload.amount as number,
+      currency: accountCurrency,
+      exchange_rate: undefined,
+    }
+    setActionTransaction(updatedTransaction)
+    setTransactions((prev) => prev.map((item) => (item.id === transaction.id ? updatedTransaction : item)))
+    resetPostingFormState()
+  }
+
+  const handleInitPostingForm = (transaction: Transaction) => {
+    const account = accounts.find((item) => item.id === transaction.account_id)
+    const accountCurrency = (account?.currency as CurrencyCode) || fallbackCurrency
+    const projectedAmount = transaction.projected_amount ?? transaction.amount ?? null
+    const projectedCurrency =
+      (transaction.projected_currency as CurrencyCode) ??
+      (transaction.currency as CurrencyCode) ??
+      accountCurrency
+    const needsConversion = projectedCurrency !== accountCurrency
+    setPostingFormState({
+      visible: true,
+      amount:
+        !needsConversion && projectedAmount && projectedAmount > 0
+          ? String(projectedAmount)
+          : '',
+      error: null,
+      projectedAmount,
+      projectedCurrency,
+      accountCurrency,
+      needsConversion,
+    })
+  }
+
+  const handleSavePostingForm = async () => {
+    if (!actionTransaction) {
+      return
+    }
+    const parsed = parseFloat(postingFormState.amount)
+    if (Number.isNaN(parsed) || parsed <= 0) {
+      setPostingFormState((prev) => ({
+        ...prev,
+        error: 'Please enter a valid amount greater than zero.',
+      }))
+      return
+    }
+    const projectedAmount = postingFormState.projectedAmount
+    const exchangeRate =
+      projectedAmount && projectedAmount > 0 ? parsed / projectedAmount : undefined
+    await handleMarkPostedFromModal(actionTransaction, parsed, exchangeRate)
+    resetPostingFormState()
+  }
+
+  const handleCancelPostingForm = () => {
+    resetPostingFormState()
+  }
+
+  const handleToggleRecurring = async (transaction: Transaction) => {
+    try {
+      const nextIsRecurring = !transaction.is_recurring
+      const nextFrequency: RecurrenceFrequency | undefined = nextIsRecurring
+        ? (transaction.recurrence_frequency as RecurrenceFrequency) || 'monthly'
+        : undefined
+      await updateTransaction({
+        id: transaction.id,
+        data: {
+          is_recurring: nextIsRecurring,
+          recurrence_frequency: nextFrequency,
+        },
+      }).unwrap()
+      const updatedTransaction: Transaction = {
+        ...transaction,
+        is_recurring: nextIsRecurring,
+        recurrence_frequency: nextFrequency,
+      }
+      if (actionTransaction?.id === transaction.id) {
+        setActionTransaction(updatedTransaction)
+      }
+      setTransactions((prev) => prev.map((item) => (item.id === transaction.id ? updatedTransaction : item)))
+    } catch (error) {
+      console.error('Error toggling recurring status:', error)
+    }
+  }
+
+  const openEditFromModal = (transaction: Transaction) => {
+    closeActionModal()
+    handleEdit(transaction)
+  }
+
+  const getTransactionMeta = (transaction: Transaction) => {
+    const primaryAccount = accounts.find((a) => a.id === transaction.account_id)
+    const fromAccount = transaction.transfer_from_account_id
+      ? accounts.find((a) => a.id === transaction.transfer_from_account_id)
+      : undefined
+    const toAccount = transaction.transfer_to_account_id
+      ? accounts.find((a) => a.id === transaction.transfer_to_account_id)
+      : undefined
+    const currencyCode = (transaction.currency as CurrencyCode) || fallbackCurrency
+    const amountLabel = formatCurrency(transaction.amount, currencyCode)
+    const projectedLabel =
+      transaction.projected_amount && transaction.projected_currency
+        ? formatCurrency(transaction.projected_amount, transaction.projected_currency as CurrencyCode)
+        : null
+    const transferFeeLabel =
+      transaction.transfer_fee && transaction.transfer_fee > 0
+        ? formatCurrency(transaction.transfer_fee, currencyCode)
+        : null
+    const typeBadgeStyles =
+      transaction.transaction_type === 'credit'
+        ? 'bg-green-100 text-green-800'
+        : transaction.transaction_type === 'debit'
+        ? 'bg-red-100 text-red-800'
+        : 'bg-blue-100 text-blue-800'
+    const amountClass =
+      transaction.transaction_type === 'credit'
+        ? 'text-green-600'
+        : transaction.transaction_type === 'debit'
+        ? 'text-red-600'
+        : 'text-blue-600'
+
+    return {
+      primaryAccount,
+      fromAccount,
+      toAccount,
+      category: categories.find((c) => c.id === transaction.category_id),
+      amountLabel,
+      projectedLabel,
+      transferFeeLabel,
+      typeBadgeStyles,
+      amountClass,
     }
   }
 
@@ -282,29 +941,50 @@ export function TransactionsPage() {
     )
   }
 
+  const emptyState = (
+    <div className="card p-6 text-center space-y-4">
+      <div className="w-16 h-16 mx-auto rounded-full bg-gray-100 flex items-center justify-center">
+        <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+        </svg>
+      </div>
+      <div>
+        <p className="text-lg font-semibold text-gray-900">No transactions found</p>
+        <p className="text-sm text-gray-500 mt-1">
+          {hasActiveFilters
+            ? 'No transactions match the current filters. Try adjusting them or reset to see more.'
+            : 'No activity recorded for this month yet. Add your first transaction to get started.'}
+        </p>
+      </div>
+      <button
+        onClick={() => setIsCreateModalOpen(true)}
+        className="btn-primary focus-ring w-full sm:w-auto mx-auto"
+      >
+        Add Transaction
+      </button>
+    </div>
+  )
+
   return (
-    <div className="max-w-7xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
+    <div className="max-w-6xl mx-auto px-4 py-6 sm:px-6 lg:px-8 space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-3xl font-bold text-gray-900">Transactions</h1>
         <button
           onClick={() => setIsCreateModalOpen(true)}
-          className="btn-primary focus-ring"
+          className="btn-primary focus-ring w-full sm:w-auto justify-center"
         >
-          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-          </svg>
           Add Transaction
         </button>
       </div>
 
       {/* Search and Filters */}
-      <div className="card p-6 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="label">Search Transactions</label>
+      <div className="card p-4 sm:p-6 space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="w-full lg:max-w-md">
+            <label className="label">Search transactions</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
               </div>
@@ -317,234 +997,561 @@ export function TransactionsPage() {
               />
             </div>
           </div>
-          
-          <div>
-            <label className="label">Filter by Account</label>
-            <select
-              value={filterAccount}
-              onChange={(e) => setFilterAccount(e.target.value === '' ? '' : parseInt(e.target.value))}
-              className="select-field focus-ring"
-            >
-              <option value="">All Accounts</option>
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          
-          <div>
-            <label className="label">Filter by Type</label>
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value as Transaction['transaction_type'] | '')}
-              className="select-field focus-ring"
-            >
-              <option value="">All Types</option>
-              <option value="credit">Income (Credit)</option>
-              <option value="debit">Expense (Debit)</option>
-              <option value="transfer">Transfer</option>
-            </select>
-          </div>
-        </div>
-        
-        {(searchTerm || filterAccount || filterType) && (
-          <div className="mt-4 flex items-center justify-between">
-            <p className="text-sm text-gray-600">
-              Showing {filteredTransactions.length} of {transactions?.length || 0} transactions
-            </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleMonthChange('prev')}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="View previous month"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <span className="text-sm font-semibold text-gray-900">{currentMonthLabel}</span>
+              <button
+                type="button"
+                onClick={() => handleMonthChange('next')}
+                className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="View next month"
+                disabled={isAtCurrentMonth}
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </div>
             <button
-              onClick={() => {
-                setSearchTerm('')
-                setFilterAccount('')
-                setFilterType('')
-              }}
-              className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+              type="button"
+              onClick={() => setShowFilters((prev) => !prev)}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              Clear filters
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18l-7 8v6l-4 2v-8z" />
+              </svg>
+              {showFilters ? 'Hide filters' : 'Show filters'}
             </button>
           </div>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-gray-700">Date range: {dateRangeSummary}</p>
+            <p className="text-xs text-gray-500">
+              {isCustomRange ? 'Custom range selected' : 'Automatically showing whole-month activity'}
+            </p>
+          </div>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="btn-secondary focus-ring self-start sm:self-auto"
+            >
+              Reset filters
+            </button>
+          )}
+        </div>
+        {showFilters && (
+          <div className="space-y-6">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">Accounts</h3>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedAccountIds([])}
+                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                    selectedAccountIds.length === 0
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                  disabled={selectedAccountIds.length === 0}
+                >
+                  All accounts
+                </button>
+                {accounts.map((account) => {
+                  const isSelected = selectedAccountIds.includes(account.id)
+                  return (
+                    <button
+                      type="button"
+                      key={account.id}
+                      onClick={() => toggleAccountFilter(account.id)}
+                      className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                        isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                  {account.name}
+                    </button>
+                  )
+                })}
+          </div>
+            </div>
+          <div>
+              <h3 className="text-sm font-semibold text-gray-700">Transaction types</h3>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTypes([])}
+                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                    selectedTypes.length === 0
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                  disabled={selectedTypes.length === 0}
+                >
+                  All types
+                </button>
+                {transactionTypeOptions.map((option) => {
+                  const isSelected = selectedTypes.includes(option.value)
+                  return (
+                    <button
+                      type="button"
+                      key={option.value}
+                      onClick={() => toggleTypeFilter(option.value)}
+                      className={`rounded-full px-3 py-1.5 text-sm font-medium capitalize transition ${
+                        isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  )
+                })}
+          </div>
+        </div>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700">Categories</h3>
+              <div className="mt-2 flex flex-wrap gap-2">
+            <button
+                  type="button"
+                  onClick={() => setSelectedCategoryIds([])}
+                  className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                    selectedCategoryIds.length === 0
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                  disabled={selectedCategoryIds.length === 0}
+                >
+                  All categories
+            </button>
+                {categories.map((category) => {
+                  const isSelected = selectedCategoryIds.includes(category.id)
+                  return (
+                    <button
+                      type="button"
+                      key={category.id}
+                      onClick={() => toggleCategoryFilter(category.id)}
+                      className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                        isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {category.name}
+                    </button>
+                  )
+                })}
+          </div>
+      </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Custom start date</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => handleCustomStartDateChange(e.target.value)}
+                  className="input-field focus-ring"
+                  max={endDate || undefined}
+                />
+              </div>
+              <div>
+                <label className="label">Custom end date</label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => handleCustomEndDateChange(e.target.value)}
+                  className="input-field focus-ring"
+                  min={startDate || undefined}
+                />
+              </div>
+            </div>
+            {isCustomRange && (
+              <p className="text-xs text-gray-500">
+                Month navigation will snap back to calendar months. Use reset to return to the current month view.
+              </p>
+            )}
+                    </div>
         )}
       </div>
 
-      {/* Transactions Table */}
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Account</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredTransactions.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-6 py-12 text-center">
-                    <div className="text-gray-500">
-                      <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                      </svg>
-                      <p className="text-lg font-medium">No transactions found</p>
-                      <p className="text-sm mt-1">
-                        {searchTerm || filterAccount || filterType 
-                          ? 'Try adjusting your search or filters' 
-                          : 'Start by adding your first transaction'
-                        }
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredTransactions.map((transaction) => {
-                  const primaryAccount = accounts.find((a) => a.id === transaction.account_id)
-                  const fromAccount = transaction.transfer_from_account_id
-                    ? accounts.find((a) => a.id === transaction.transfer_from_account_id)
-                    : undefined
-                  const toAccount = transaction.transfer_to_account_id
-                    ? accounts.find((a) => a.id === transaction.transfer_to_account_id)
-                    : undefined
-                  const category = categories.find((c) => c.id === transaction.category_id)
-                  const currencyCode = (transaction.currency as CurrencyCode) || fallbackCurrency
-                  const amountLabel = formatCurrency(transaction.amount, currencyCode)
-                  const projectedLabel =
-                    transaction.projected_amount && transaction.projected_currency
-                      ? formatCurrency(
-                          transaction.projected_amount,
-                          transaction.projected_currency as CurrencyCode
-                        )
-                      : null
-                  const transferFeeLabel =
-                    transaction.transfer_fee && transaction.transfer_fee > 0
-                      ? formatCurrency(transaction.transfer_fee, currencyCode)
-                      : null
-                  const typeBadgeStyles =
-                    transaction.transaction_type === 'credit'
-                      ? 'bg-green-100 text-green-800'
-                      : transaction.transaction_type === 'debit'
-                      ? 'bg-red-100 text-red-800'
-                      : 'bg-blue-100 text-blue-800'
-                  const amountClass =
-                    transaction.transaction_type === 'credit'
-                      ? 'text-green-600'
-                      : transaction.transaction_type === 'debit'
-                      ? 'text-red-600'
-                      : 'text-blue-600'
-
-                  return (
-                    <tr key={transaction.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {new Date(transaction.transaction_date).toLocaleDateString()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        <div className="font-medium">{transaction.description}</div>
-                        {transaction.is_recurring && (
-                          <div className="text-xs text-purple-600 mt-1">Recurring</div>
-                        )}
-                        {!transaction.is_posted && (
-                          <div className="text-xs text-amber-600 mt-1">Pending posting</div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {transaction.transaction_type === 'transfer' ? (
-                          <div>
-                            <div className="font-medium">
-                              {fromAccount?.name || primaryAccount?.name || 'From account'}
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              → {toAccount?.name || 'Destination account'}
-                            </div>
-                          </div>
-                        ) : (
-                          primaryAccount?.name
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {transaction.transaction_type === 'transfer'
-                          ? 'Transfer'
-                          : category?.name || 'Uncategorized'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${typeBadgeStyles}`}>
-                          {transaction.transaction_type}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex flex-wrap gap-2">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                              transaction.is_posted ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                            }`}
-                          >
-                            {transaction.is_posted ? 'Posted' : 'Planned'}
+      {transactions.length === 0 ? (
+        emptyState
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-3">
+          {orderedTransactions.map((transaction) => {
+            const {
+              primaryAccount,
+              fromAccount,
+              toAccount,
+              category,
+              amountLabel,
+              projectedLabel,
+              transferFeeLabel,
+              typeBadgeStyles,
+              amountClass,
+            } = getTransactionMeta(transaction)
+            const relativeDate = formatRelativeDate(transaction.transaction_date)
+            const exactDate = formatDateWithOrdinal(new Date(transaction.transaction_date))
+            const postedDate = transaction.posting_date ? formatDateWithOrdinal(new Date(transaction.posting_date)) : null
+            const typeLabel = TRANSACTION_TYPE_LABELS[transaction.transaction_type]
+            const recurrenceChipLabel = transaction.is_recurring ? formatRecurrenceLabel(transaction.recurrence_frequency) : null
+            const cardStateClasses = transaction.is_posted ? '' : 'bg-gray-50 border border-gray-100'
+            const description = transaction.description?.trim() || 'Untitled transaction'
+                
+                return (
+              <article
+                key={transaction.id}
+                className={`card p-4 sm:p-5 transition-shadow duration-200 hover:shadow-lg focus-within:ring-2 focus-within:ring-blue-500 cursor-pointer ${cardStateClasses}`}
+                onClick={() => openActionModal(transaction)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    openActionModal(transaction)
+                  }
+                }}
+              >
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        <span>{relativeDate}</span>
+                        <span className="hidden md:inline text-gray-300">•</span>
+                        <span className="text-gray-400">{exactDate}</span>
+                      </div>
+                      <p className="text-base font-semibold text-gray-900">{description}</p>
+                      <div className="flex flex-wrap gap-2 text-xs text-gray-600">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1">
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                          </svg>
+                          {transaction.transaction_type === 'transfer'
+                            ? `${fromAccount?.name || primaryAccount?.name || 'Source'} → ${toAccount?.name || 'Destination'}`
+                            : primaryAccount?.name || 'Account'}
+                      </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1">
+                          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                          </svg>
+                          {transaction.transaction_type === 'transfer' ? 'Transfer' : category?.name || 'Uncategorized'}
+                      </span>
+                        {recurrenceChipLabel && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-1 text-purple-700">
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                            </svg>
+                            {recurrenceChipLabel}
                           </span>
-                          {transaction.is_recurring && (
-                            <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-700">
-                              Recurring
-                            </span>
-                          )}
-                          {transferFeeLabel && (
-                            <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-orange-100 text-orange-700">
-                              Fee {transferFeeLabel}
-                            </span>
-                          )}
-                          {projectedLabel && (
-                            <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-sky-100 text-sky-700">
-                              Projected {projectedLabel}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <span className={amountClass}>{amountLabel}</span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => handleEdit(transaction)}
-                            className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors duration-200"
-                            title="Edit transaction"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        )}
+                        {transferFeeLabel && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-1 text-orange-700">
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
                             </svg>
-                          </button>
-                          <button
-                            onClick={() => handleDelete(transaction.id)}
-                            className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors duration-200"
-                            title="Delete transaction"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            Fee {transferFeeLabel}
+                          </span>
+                        )}
+                        {projectedLabel && !transaction.is_posted && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-sky-100 px-2 py-1 text-sky-700">
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3" />
                             </svg>
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })
+                            Projected {projectedLabel}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-2 text-right">
+                      <p className={`text-lg font-bold ${amountClass}`}>{amountLabel}</p>
+                      {transaction.original_amount !== undefined && transaction.original_currency && (
+                        <p className="text-xs text-gray-500">
+                          Original {formatCurrency(transaction.original_amount, transaction.original_currency as CurrencyCode)}
+                        </p>
+                      )}
+                      {postedDate && <p className="text-xs text-gray-500">Posted {postedDate}</p>}
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <span className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${typeBadgeStyles}`}>
+                          {typeLabel}
+                        </span>
+                        <span
+                          className={`inline-flex rounded-full px-2 py-1 text-xs font-semibold ${
+                            transaction.is_posted ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'
+                          }`}
+                        >
+                          {transaction.is_posted ? 'Posted' : 'Planned'}
+                        </span>
+                        {transaction.is_reconciled && (
+                          <span className="inline-flex rounded-full px-2 py-1 text-xs font-semibold bg-emerald-100 text-emerald-700">
+                            Reconciled
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            )
+          })}
+          <div ref={sentinelRef} className="h-3" />
+          {!isInitialLoading && (isFetchingMore || hasMoreTransactions) && (
+            <p className="text-center text-xs text-gray-500 pb-2">
+              {isFetchingMore ? 'Loading more transactions...' : 'Scroll for more transactions'}
+            </p>
+          )}
+          {!isInitialLoading && !hasMoreTransactions && orderedTransactions.length === totalTransactions && totalTransactions > 0 && (
+            <p className="text-center text-xs text-gray-400 pb-2">End of list</p>
+          )}
+          </div>
+          <div className="flex justify-end px-1">
+            <p className="text-xs text-gray-500">
+              Showing {transactions.length} of {totalTransactions} transactions
+            </p>
+          </div>
+        </>
+      )}
+
+      {isActionModalOpen && actionTransaction && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 px-4"
+          onClick={closeActionModal}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl bg-white p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Transaction Actions</h2>
+                <p className="text-sm text-gray-500">
+                  {actionTransaction.description || 'No description'}
+                </p>
+              </div>
+                        <button
+                onClick={closeActionModal}
+                className="text-gray-400 hover:text-gray-600 transition-colors duration-200"
+                aria-label="Close actions modal"
+              >
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="rounded-lg border border-gray-200 p-4">
+                <h3 className="text-sm font-semibold text-gray-700">Dates</h3>
+                <dl className="mt-3 space-y-2 text-sm text-gray-600">
+                  <div className="flex justify-between gap-3">
+                    <dt>Transaction</dt>
+                    <dd className="text-right">
+                      {actionModalMeta?.transactionDate}
+                      {actionModalMeta?.transactionRelative && (
+                        <span className="ml-2 text-gray-400">({actionModalMeta.transactionRelative})</span>
+                      )}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <dt>Posting</dt>
+                    <dd className="text-right">
+                      {actionModalMeta?.postingDate}
+                      {actionModalMeta?.postingRelative && (
+                        <span className="ml-2 text-gray-400">({actionModalMeta.postingRelative})</span>
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div className="rounded-lg border border-gray-200 p-4">
+                <h3 className="text-sm font-semibold text-gray-700">Details</h3>
+                <dl className="mt-3 space-y-2 text-sm text-gray-600">
+                  <div className="flex justify-between">
+                    <dt>Amount</dt>
+                    <dd className={
+                      actionTransaction.transaction_type === 'credit'
+                        ? 'text-green-600 font-medium'
+                        : actionTransaction.transaction_type === 'debit'
+                        ? 'text-red-600 font-medium'
+                        : 'text-blue-600 font-medium'
+                    }>
+                      {formatCurrency(actionTransaction.amount, actionTransaction.currency as CurrencyCode)}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt>Type</dt>
+                    <dd>{actionModalMeta?.typeLabel}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt>Status</dt>
+                    <dd className={actionTransaction.is_posted ? 'text-emerald-600' : 'text-amber-600'}>
+                      {actionTransaction.is_posted ? 'Posted' : 'Planned'}
+                    </dd>
+                  </div>
+                  {actionModalMeta?.recurrenceLabel && (
+                    <div className="flex justify-between">
+                      <dt>Recurring</dt>
+                      <dd>{actionModalMeta.recurrenceLabel}</dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {actionTransaction.is_posted ? (
+                  <button
+                    onClick={() => handleRevertPostedFromModal(actionTransaction)}
+                    className="flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors duration-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Mark as Planned
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleInitPostingForm(actionTransaction)}
+                    className="flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors duration-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Mark as Posted
+                  </button>
+                )}
+                <button
+                  onClick={() => handleToggleRecurring(actionTransaction)}
+                  className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors duration-200 ${
+                    actionTransaction.is_recurring
+                      ? 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582M20 20v-5h-.581M5 9a7 7 0 0112.906-2M19 15a7 7 0 01-12.906 2" />
+                  </svg>
+                  {actionTransaction.is_recurring ? 'Stop Recurring' : 'Mark as Recurring'}
+                </button>
+                <button
+                  onClick={() => openEditFromModal(actionTransaction)}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-blue-700"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                  Edit Transaction
+                        </button>
+                        <button
+                  onClick={() => handleDelete(actionTransaction.id)}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-gray-100 px-4 py-3 text-sm font-semibold text-gray-700 transition-colors duration-200 hover:bg-gray-200"
+                        >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                  Delete Transaction
+                        </button>
+                      </div>
+              {!actionTransaction.is_posted && postingFormState.visible && (
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 space-y-3">
+                  <p className="text-sm font-medium text-blue-900">
+                    {postingFormState.projectedAmount
+                      ? `Projected amount: ${formatCurrency(
+                          postingFormState.projectedAmount,
+                          postingFormState.projectedCurrency
+                        )}`
+                      : 'No projected amount recorded.'}
+                  </p>
+                  <p className="text-xs text-blue-800">
+                    {postingFormState.needsConversion
+                      ? `Enter the amount received in ${postingFormState.accountCurrency}. We will infer the exchange rate.`
+                      : 'Verify the received amount. Update it only if the actual amount differs.'}
+                  </p>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="flex-1">
+                      <label className="label text-blue-900">Amount in {postingFormState.accountCurrency}</label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-blue-500 text-sm">
+                          {getCurrencySymbol(postingFormState.accountCurrency)}
+                        </span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={postingFormState.amount}
+                          onChange={(e) =>
+                            setPostingFormState((prev) => ({
+                              ...prev,
+                              amount: e.target.value,
+                              error: null,
+                            }))
+                          }
+                          className="input-field pl-7 focus-ring"
+                          placeholder="0.00"
+                        />
+                      </div>
+                      {postingFormState.error && (
+                        <p className="mt-1 text-xs text-red-600">{postingFormState.error}</p>
+                      )}
+        </div>
+                    {!postingFormState.needsConversion &&
+                      postingFormState.projectedAmount &&
+                      postingFormState.projectedAmount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPostingFormState((prev) => ({
+                              ...prev,
+                              amount: String(prev.projectedAmount ?? ''),
+                              error: null,
+                            }))
+                          }
+                          className="rounded-lg bg-white px-3 py-2 text-sm font-semibold text-blue-700 shadow hover:bg-blue-100"
+                        >
+                          Use projected amount
+                        </button>
+                      )}
+      </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSavePostingForm}
+                      className="btn-primary focus-ring"
+                    >
+                      Save Posted Amount
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelPostingForm}
+                      className="btn-secondary focus-ring"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
               )}
-            </tbody>
-          </table>
+            </div>
         </div>
       </div>
+      )}
 
       {/* Create/Edit Modal */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center px-4">
           <div className="bg-white rounded-lg p-6 w-full max-w-xl shadow-2xl">
             <div className="flex items-start justify-between mb-4">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {editingTransaction ? 'Edit Transaction' : 'Create Transaction'}
-                </h2>
+              {editingTransaction ? 'Edit Transaction' : 'Create Transaction'}
+            </h2>
                 <p className="text-sm text-gray-500 mt-1">
                   {formData.transaction_type === 'transfer'
                     ? 'Move funds between your accounts and optionally include fees.'
@@ -567,150 +1574,6 @@ export function TransactionsPage() {
 
             <form onSubmit={handleSubmit} className="space-y-5">
               <div>
-                <label className="label">
-                  {formData.transaction_type === 'transfer' ? 'From Account' : 'Account'}
-                </label>
-                <select
-                  value={formData.account_id || ''}
-                  onChange={(e) => handleAccountChange(e.target.value === '' ? 0 : parseInt(e.target.value, 10))}
-                  className="select-field focus-ring"
-                  required
-                >
-                  <option value="">Select account</option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name} ({formatCurrency(account.balance, account.currency as CurrencyCode)})
-                    </option>
-                  ))}
-                </select>
-                <p className="mt-1 text-xs text-gray-500">
-                  {formData.transaction_type === 'transfer'
-                    ? 'Funds will move out of this account.'
-                    : 'This is the account where the transaction will be recorded.'}
-                </p>
-                <p className="mt-1 text-xs text-gray-500">
-                  Currency: {formData.currency} ({formCurrencySymbol})
-                </p>
-              </div>
-
-              {formData.transaction_type === 'transfer' && (
-                <div>
-                  <label className="label">To Account</label>
-                  <select
-                    value={formData.transfer_to_account_id || ''}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        transfer_to_account_id: e.target.value ? parseInt(e.target.value, 10) : undefined,
-                      }))
-                    }
-                    className="select-field focus-ring"
-                    required
-                  >
-                    <option value="">Select destination</option>
-                    {transferDestinationOptions.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name} ({formatCurrency(account.balance, account.currency as CurrencyCode)})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {formData.transaction_type !== 'transfer' && (
-                <div>
-                  <label className="label">Category</label>
-                  <select
-                    value={formData.category_id || ''}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        category_id: e.target.value ? parseInt(e.target.value, 10) : undefined,
-                      }))
-                    }
-                    className="select-field focus-ring"
-                  >
-                    <option value="">Select category</option>
-                    {categories?.map((category) => (
-                      <option key={category.id} value={category.id}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <div>
-                <label className="label">Transaction Type</label>
-                <select
-                  value={formData.transaction_type}
-                  onChange={(e) => handleTypeChange(e.target.value as Transaction['transaction_type'])}
-                  className="select-field focus-ring"
-                  required
-                >
-                  <option value="debit">Debit (Expense)</option>
-                  <option value="credit">Credit (Income)</option>
-                  <option value="transfer">Transfer</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="label">Amount</label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
-                      {formCurrencySymbol}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={formData.amount || ''}
-                      onChange={(e) => {
-                        const value = parseFloat(e.target.value)
-                        setFormData((prev) => ({
-                          ...prev,
-                          amount: Number.isNaN(value) ? 0 : value,
-                        }))
-                      }}
-                      className="input-field pl-7 focus-ring"
-                      placeholder="0.00"
-                      required
-                    />
-                  </div>
-                </div>
-
-                {formData.transaction_type === 'transfer' && (
-                  <div>
-                    <label className="label">Transfer Fee</label>
-                    <div className="relative">
-                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
-                        {formCurrencySymbol}
-                      </span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={formData.transfer_fee || ''}
-                        onChange={(e) => {
-                          const value = parseFloat(e.target.value)
-                          setFormData((prev) => ({
-                            ...prev,
-                            transfer_fee: Number.isNaN(value) ? 0 : value,
-                          }))
-                        }}
-                        className="input-field pl-7 focus-ring"
-                        placeholder="0.00"
-                      />
-                    </div>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Automatically deducted from the source account. Default is 0.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div>
                 <label className="label">Description</label>
                 <input
                   type="text"
@@ -726,13 +1589,249 @@ export function TransactionsPage() {
                   required
                 />
               </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="label">
+                  {formData.transaction_type === 'transfer' ? 'From Account' : 'Account'}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {accounts.map((account) => {
+                    const isSelected = formData.account_id === account.id
+                    return (
+                      <button
+                        type="button"
+                        key={account.id}
+                        onClick={() => handleAccountSelect(account.id)}
+                        className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                          isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {account.name}
+                        <span className="ml-2 text-xs font-normal">
+                          ({account.currency})
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  {formData.transaction_type === 'transfer'
+                    ? 'Funds will move out of this account.'
+                    : 'This is the account where the transaction will be recorded.'}
+                </p>
+                {formData.account_id !== 0 && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    Recording in {formData.currency} ({formCurrencySymbol})
+                  </p>
+                )}
+              </div>
+              
+              {formData.transaction_type === 'transfer' && (
+              <div>
+                  <label className="label">Destination Account</label>
+                  <div className="flex flex-wrap gap-2">
+                    {transferDestinationOptions.length === 0 && (
+                      <p className="text-sm text-gray-500">Select a different source account to see destinations.</p>
+                    )}
+                    {transferDestinationOptions.map((account) => {
+                      const isSelected = formData.transfer_to_account_id === account.id
+                      return (
+                        <button
+                          type="button"
+                          key={account.id}
+                          onClick={() =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              transfer_to_account_id: isSelected ? undefined : account.id,
+                            }))
+                          }
+                          className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                            isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          {account.name}
+                          <span className="ml-2 text-xs font-normal">({account.currency})</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              {formData.transaction_type !== 'transfer' && (
                 <div>
+                  <label className="label">Category</label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          category_id: undefined,
+                        }))
+                      }
+                      className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                        formData.category_id === undefined
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      Uncategorized
+                    </button>
+                    {categories.map((category) => {
+                      const isSelected = formData.category_id === category.id
+                      return (
+                        <button
+                          type="button"
+                          key={category.id}
+                          onClick={() =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              category_id: category.id,
+                            }))
+                          }
+                          className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                            isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                      {category.name}
+                        </button>
+                      )
+                    })}
+              </div>
+                </div>
+              )}
+              
+              <div>
+                <label className="label">Transaction Type</label>
+                <div className="flex flex-wrap gap-2">
+                  {transactionTypeOptions.map((option) => {
+                    const isSelected = formData.transaction_type === option.value
+                    return (
+                      <button
+                        type="button"
+                        key={option.value}
+                        onClick={() => handleTypeChange(option.value)}
+                        className={`rounded-full px-3 py-1.5 text-sm font-medium capitalize transition ${
+                          isSelected ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {!formData.is_posted && (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="label">Amount</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
+                        {projectedCurrencySymbol}
+                      </span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={formData.projected_amount ?? ''}
+                        onChange={(e) => {
+                          const value = parseFloat(e.target.value)
+                          setFormData((prev) => ({
+                            ...prev,
+                            projected_amount: Number.isNaN(value) ? undefined : value,
+                          }))
+                        }}
+                        className="input-field pl-7 focus-ring"
+                        placeholder="0.00"
+                  required
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="label">Currency</label>
+                    <select
+                      value={formData.projected_currency ?? formData.currency}
+                      onChange={(e) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          projected_currency: e.target.value as CurrencyCode,
+                        }))
+                      }
+                      className="select-field focus-ring"
+                    >
+                      {currencyOptions.map((currency) => (
+                        <option key={currency} value={currency}>
+                          {currency}
+                        </option>
+                      ))}
+                </select>
+              </div>
+                </div>
+              )}
+              
+              {formData.transaction_type === 'transfer' && (
+              <div>
+                  <label className="label">Transfer Fee</label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
+                      {formCurrencySymbol}
+                    </span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                      value={formData.transfer_fee || ''}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value)
+                        setFormData((prev) => ({
+                          ...prev,
+                          transfer_fee: Number.isNaN(value) ? 0 : value,
+                        }))
+                      }}
+                      className="input-field pl-7 focus-ring"
+                      placeholder="0.00"
+                />
+              </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Automatically deducted from the source account. Default is 0.
+                  </p>
+                </div>
+              )}
+              
+              {formData.is_posted && (
+              <div>
+                  <label className="label">Amount</label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
+                      {formCurrencySymbol}
+                    </span>
+                <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formData.amount ?? ''}
+                      onChange={(e) => {
+                        const value = parseFloat(e.target.value)
+                        setFormData((prev) => ({
+                          ...prev,
+                          amount: Number.isNaN(value) ? undefined : value,
+                        }))
+                      }}
+                      className="input-field pl-7 focus-ring"
+                      placeholder="0.00"
+                  required
+                />
+              </div>
+                </div>
+              )}
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
                   <label className="label">Transaction Date</label>
-                  <input
-                    type="date"
-                    value={formData.transaction_date}
+                <input
+                  type="date"
+                  value={formData.transaction_date}
                     onChange={(e) =>
                       setFormData((prev) => ({
                         ...prev,
@@ -740,37 +1839,42 @@ export function TransactionsPage() {
                       }))
                     }
                     className="input-field focus-ring"
-                    required
-                  />
-                </div>
-                <div>
+                  required
+                />
+              </div>
+              <div>
                   <label className="label">Posting Date (optional)</label>
-                  <input
-                    type="date"
-                    value={formData.posting_date || ''}
+                <input
+                  type="date"
+                  value={formData.posting_date || ''}
                     onChange={(e) =>
                       setFormData((prev) => ({
                         ...prev,
                         posting_date: e.target.value || undefined,
                       }))
                     }
-                    className="input-field focus-ring"
+                    className="input-field focus-ring disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500"
+                    disabled={!formData.is_posted}
                   />
                 </div>
               </div>
-
+              
               <div className="flex flex-wrap gap-4">
                 <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                   <input
                     type="checkbox"
                     className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                     checked={formData.is_posted}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const checked = e.target.checked
+                      const today = new Date().toISOString().split('T')[0]
                       setFormData((prev) => ({
                         ...prev,
-                        is_posted: e.target.checked,
+                        is_posted: checked,
+                        posting_date: checked ? prev.posting_date ?? today : undefined,
+                        amount: checked ? prev.amount ?? prev.projected_amount : prev.amount,
                       }))
-                    }
+                    }}
                   />
                   <span>Mark as posted</span>
                 </label>
@@ -783,6 +1887,9 @@ export function TransactionsPage() {
                       setFormData((prev) => ({
                         ...prev,
                         is_recurring: e.target.checked,
+                        recurrence_frequency: e.target.checked
+                          ? prev.recurrence_frequency || 'monthly'
+                          : prev.recurrence_frequency,
                       }))
                     }
                   />
@@ -790,132 +1897,33 @@ export function TransactionsPage() {
                 </label>
               </div>
 
-              <details className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                <summary className="text-sm font-medium text-gray-700 cursor-pointer">
-                  Budget & multi-currency details (optional)
-                </summary>
-                <div className="mt-4 space-y-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="label">Projected Amount</label>
-                      <div className="relative">
-                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
-                          {projectedCurrencySymbol}
-                        </span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={
-                            formData.projected_amount !== undefined ? formData.projected_amount : ''
-                          }
-                          onChange={(e) => {
-                            const value = parseFloat(e.target.value)
-                            setFormData((prev) => ({
-                              ...prev,
-                              projected_amount: Number.isNaN(value) ? undefined : value,
-                            }))
-                          }}
-                          className="input-field pl-7 focus-ring"
-                          placeholder="0.00"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="label">Projected Currency</label>
-                      <select
-                        value={formData.projected_currency ?? ''}
-                        onChange={(e) =>
-                          setFormData((prev) => ({
-                            ...prev,
-                            projected_currency: e.target.value
-                              ? (e.target.value as CurrencyCode)
-                              : undefined,
-                          }))
-                        }
-                        className="select-field focus-ring"
-                      >
-                        <option value="">Same as transaction ({formData.currency})</option>
-                        {currencyOptions.map((currency) => (
-                          <option key={currency} value={currency}>
-                            {currency}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+              {formData.is_recurring && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="label">Recurring Frequency</label>
+                    <select
+                      value={formData.recurrence_frequency}
+                      onChange={(e) =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          recurrence_frequency: e.target.value as RecurrenceFrequency,
+                        }))
+                      }
+                      className="select-field focus-ring"
+                    >
+                      {recurrenceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div>
-                      <label className="label">Original Amount</label>
-                      <div className="relative">
-                        <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-500 text-sm">
-                          {originalCurrencySymbol}
-                        </span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={
-                            formData.original_amount !== undefined ? formData.original_amount : ''
-                          }
-                          onChange={(e) => {
-                            const value = parseFloat(e.target.value)
-                            setFormData((prev) => ({
-                              ...prev,
-                              original_amount: Number.isNaN(value) ? undefined : value,
-                            }))
-                          }}
-                          className="input-field pl-7 focus-ring"
-                          placeholder="0.00"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="label">Original Currency</label>
-                      <select
-                        value={formData.original_currency ?? ''}
-                        onChange={(e) =>
-                          setFormData((prev) => ({
-                            ...prev,
-                            original_currency: e.target.value
-                              ? (e.target.value as CurrencyCode)
-                              : undefined,
-                          }))
-                        }
-                        className="select-field focus-ring"
-                      >
-                        <option value="">Same as transaction ({formData.currency})</option>
-                        {currencyOptions.map((currency) => (
-                          <option key={currency} value={currency}>
-                            {currency}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="label">Exchange Rate</label>
-                      <input
-                        type="number"
-                        step="0.0001"
-                        min="0"
-                        value={
-                          formData.exchange_rate !== undefined ? formData.exchange_rate : ''
-                        }
-                        onChange={(e) => {
-                          const value = parseFloat(e.target.value)
-                          setFormData((prev) => ({
-                            ...prev,
-                            exchange_rate: Number.isNaN(value) ? undefined : value,
-                          }))
-                        }}
-                        className="input-field focus-ring"
-                        placeholder="1.00"
-                      />
-                    </div>
-                  </div>
+                  <p className="text-xs text-gray-500 sm:self-end">
+                    Choose how often this transaction repeats. Frequency helps forecast upcoming cash flow.
+                  </p>
                 </div>
-              </details>
-
+              )}
+              
               <div className="flex space-x-3 pt-2">
                 <button type="submit" className="flex-1 btn-primary focus-ring">
                   {editingTransaction ? 'Update Transaction' : 'Create Transaction'}

@@ -36,3 +36,4 @@ class User(Base):
     transactions = relationship("Transaction", back_populates="user")
     allocations = relationship("Allocation", back_populates="user")
     categories = relationship("Category", back_populates="user")
+    budget_entries = relationship("BudgetEntry", back_populates="user")

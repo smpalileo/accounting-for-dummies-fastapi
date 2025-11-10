@@ -50,7 +50,7 @@ async def startup_event():
         # Create enum types first
         conn.execute(text("""
             DO $$ BEGIN
-                CREATE TYPE accounttype AS ENUM ('CASH', 'E_WALLET', 'SAVINGS', 'CHECKING', 'CREDIT');
+                CREATE TYPE accounttype AS ENUM ('cash', 'e_wallet', 'savings', 'checking', 'credit');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$;
@@ -58,7 +58,7 @@ async def startup_event():
         
         conn.execute(text("""
             DO $$ BEGIN
-                CREATE TYPE transactiontype AS ENUM ('DEBIT', 'CREDIT');
+                CREATE TYPE transactiontype AS ENUM ('debit', 'credit', 'transfer');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$;
@@ -66,7 +66,23 @@ async def startup_event():
         
         conn.execute(text("""
             DO $$ BEGIN
-                CREATE TYPE allocationtype AS ENUM ('SAVINGS', 'BUDGET', 'GOAL');
+                CREATE TYPE allocationtype AS ENUM ('savings', 'budget', 'goal');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        
+        conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE budgetentrytype AS ENUM ('income', 'expense');
+            EXCEPTION
+                WHEN duplicate_object THEN null;
+            END $$;
+        """))
+        
+        conn.execute(text("""
+            DO $$ BEGIN
+                CREATE TYPE recurrencefrequency AS ENUM ('monthly', 'quarterly', 'semi_annual', 'annual');
             EXCEPTION
                 WHEN duplicate_object THEN null;
             END $$;
@@ -147,6 +163,28 @@ async def startup_event():
         """))
         
         conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS budget_entries (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                entry_type budgetentrytype NOT NULL,
+                name VARCHAR(150) NOT NULL,
+                description TEXT,
+                amount DECIMAL(15,2) NOT NULL,
+                currency currencytype DEFAULT 'PHP' NOT NULL,
+                cadence recurrencefrequency NOT NULL DEFAULT 'monthly',
+                next_occurrence TIMESTAMP WITH TIME ZONE NOT NULL,
+                lead_time_days INTEGER NOT NULL DEFAULT 0,
+                account_id INTEGER REFERENCES accounts(id),
+                category_id INTEGER REFERENCES categories(id),
+                allocation_id INTEGER REFERENCES allocations(id),
+                is_autopay BOOLEAN DEFAULT FALSE,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL REFERENCES users(id),
@@ -166,6 +204,11 @@ async def startup_event():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             )
+        """))
+        
+        conn.execute(text("""
+            ALTER TABLE transactions
+            ADD COLUMN IF NOT EXISTS budget_entry_id INTEGER REFERENCES budget_entries(id)
         """))
     
     print("Database tables initialized successfully!")

@@ -1,31 +1,107 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from typing import List, Optional
+from typing import List, Optional, Set
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
 from app.models.transaction import Transaction, TransactionType
-from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate
+from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransactionListResponse
+from app.models.transaction import RecurrenceFrequency
 from app.models.account import Account
 from app.models.category import Category
 from app.models.user import User
-from datetime import datetime, timedelta
+from app.models.budget_entry import BudgetEntry
+from app.models.allocation import Allocation, AllocationType
+from app.models.allocation import BudgetPeriodFrequency
+from datetime import datetime
 import os
 from app.core.config import settings
 
 router = APIRouter()
 
-@router.get("/", response_model=List[TransactionResponse])
+
+def _budget_delta_for_transaction(transaction_type: TransactionType, amount: float) -> float:
+    if transaction_type == TransactionType.DEBIT:
+        return amount
+    if transaction_type == TransactionType.CREDIT:
+        return -amount
+    return 0.0
+
+
+def _get_budget_allocations_for_transaction(
+    db: Session,
+    *,
+    user_id: int,
+    allocation_id: Optional[int],
+    category_id: Optional[int],
+) -> List[Allocation]:
+    allocations: List[Allocation] = []
+    seen: Set[int] = set()
+
+    if allocation_id:
+        allocation = (
+            db.query(Allocation)
+            .filter(
+                Allocation.id == allocation_id,
+                Allocation.user_id == user_id,
+                Allocation.allocation_type == AllocationType.BUDGET,
+            )
+            .first()
+        )
+        if allocation:
+            allocations.append(allocation)
+            seen.add(allocation.id)
+
+    if category_id is not None:
+        candidate_budgets = (
+            db.query(Allocation)
+            .filter(
+                Allocation.user_id == user_id,
+                Allocation.allocation_type == AllocationType.BUDGET,
+            )
+            .all()
+        )
+        for allocation in candidate_budgets:
+            if allocation.id in seen:
+                continue
+            config = allocation.configuration or {}
+            raw_category_ids = config.get("category_ids") or []
+            normalized_ids: Set[int] = set()
+            for value in raw_category_ids:
+                try:
+                    normalized_ids.add(int(value))
+                except (TypeError, ValueError):
+                    continue
+            if category_id in normalized_ids:
+                allocations.append(allocation)
+                seen.add(allocation.id)
+
+    return allocations
+
+
+def _apply_budget_delta(allocations: List[Allocation], delta: float) -> None:
+    if not delta:
+        return
+    now = datetime.utcnow()
+    for allocation in allocations:
+        current = allocation.current_amount or 0.0
+        allocation.current_amount = max(0.0, current + delta)
+        allocation.updated_at = now
+
+@router.get("/", response_model=TransactionListResponse)
 def get_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
-    account_id: Optional[int] = Query(None, description="Filter by account ID"),
-    category_id: Optional[int] = Query(None, description="Filter by category ID"),
+    account_ids: Optional[List[int]] = Query(None, alias="account_ids", description="Filter by account IDs"),
+    category_ids: Optional[List[int]] = Query(None, alias="category_ids", description="Filter by category IDs"),
     allocation_id: Optional[int] = Query(None, description="Filter by allocation ID"),
-    transaction_type: Optional[str] = Query(None, description="Filter by transaction type"),
+    transaction_types: Optional[List[str]] = Query(None, alias="transaction_types", description="Filter by transaction types"),
     start_date: Optional[datetime] = Query(None, description="Start date for filtering"),
     end_date: Optional[datetime] = Query(None, description="End date for filtering"),
-    is_reconciled: Optional[bool] = Query(None, description="Filter by reconciliation status")
+    is_reconciled: Optional[bool] = Query(None, description="Filter by reconciliation status"),
+    search: Optional[str] = Query(None, description="Search by description"),
+    limit: int = Query(10, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     """Get all transactions with optional filtering"""
     # First get user's accounts to filter transactions
@@ -40,34 +116,42 @@ def get_transactions(
         )
     )
     
-    if account_id:
+    if account_ids:
         query = query.filter(
             or_(
-                Transaction.account_id == account_id,
-                Transaction.transfer_from_account_id == account_id,
-                Transaction.transfer_to_account_id == account_id
+                Transaction.account_id.in_(account_ids),
+                Transaction.transfer_from_account_id.in_(account_ids),
+                Transaction.transfer_to_account_id.in_(account_ids)
             )
         )
-    if category_id:
-        query = query.filter(Transaction.category_id == category_id)
+    if category_ids:
+        query = query.filter(Transaction.category_id.in_(category_ids))
     if allocation_id:
         query = query.filter(Transaction.allocation_id == allocation_id)
-    if transaction_type:
-        # Convert string to enum
+    if transaction_types:
         try:
-            transaction_type_enum = TransactionType(transaction_type.lower())
-            query = query.filter(Transaction.transaction_type == transaction_type_enum)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid transaction type: {transaction_type}")
+            allowed_types = [TransactionType(item.lower()) for item in transaction_types]
+            query = query.filter(Transaction.transaction_type.in_(allowed_types))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid transaction type provided: {exc}") from exc
     if start_date:
         query = query.filter(Transaction.transaction_date >= start_date)
     if end_date:
         query = query.filter(Transaction.transaction_date <= end_date)
     if is_reconciled is not None:
         query = query.filter(Transaction.is_reconciled == is_reconciled)
-    
-    transactions = query.order_by(Transaction.transaction_date.desc()).all()
-    return transactions
+    if search:
+        query = query.filter(Transaction.description.ilike(f"%{search}%"))
+
+    total = query.count()
+    transactions = (
+        query.order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    has_more = offset + len(transactions) < total
+    return {"items": transactions, "total": total, "has_more": has_more}
 
 @router.post("/", response_model=TransactionResponse)
 def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
@@ -75,6 +159,27 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
     transaction_data = transaction.dict()
     transaction_data["user_id"] = current_user.id
     transaction_data["transfer_fee"] = transaction.transfer_fee or 0.0
+    budget_entry: Optional[BudgetEntry] = None
+
+    if transaction.budget_entry_id:
+        budget_entry = (
+            db.query(BudgetEntry)
+            .filter(
+                BudgetEntry.id == transaction.budget_entry_id,
+                BudgetEntry.user_id == current_user.id,
+            )
+            .first()
+        )
+        if not budget_entry:
+            raise HTTPException(status_code=404, detail="Budget entry not found")
+        transaction_data["budget_entry_id"] = budget_entry.id
+    
+    if transaction.is_recurring:
+        transaction_data["recurrence_frequency"] = (
+            transaction.recurrence_frequency or RecurrenceFrequency.MONTHLY
+        )
+    else:
+        transaction_data["recurrence_frequency"] = None
     
     primary_account: Optional[Account] = None
     destination_account: Optional[Account] = None
@@ -134,6 +239,16 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
             primary_account.balance -= (transaction.amount + transfer_fee)
             if destination_account:
                 destination_account.balance += transaction.amount
+
+        delta = _budget_delta_for_transaction(transaction.transaction_type, transaction.amount)
+        if delta:
+            budget_allocations = _get_budget_allocations_for_transaction(
+                db,
+                user_id=current_user.id,
+                allocation_id=transaction.allocation_id,
+                category_id=transaction.category_id,
+            )
+            _apply_budget_delta(budget_allocations, delta)
     
     db.commit()
     db.refresh(db_transaction)
@@ -184,6 +299,9 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
     old_transfer_fee = db_transaction.transfer_fee or 0.0
     old_transfer_from = db_transaction.transfer_from_account_id
     old_transfer_to = db_transaction.transfer_to_account_id
+    old_category_id = db_transaction.category_id
+    old_allocation_id = db_transaction.allocation_id
+    old_transaction_date = db_transaction.transaction_date
     
     # Reverse previous balance effects if posted
     if old_is_posted:
@@ -204,9 +322,40 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
                 to_account = db.query(Account).filter(Account.id == old_transfer_to).first()
                 if to_account:
                     to_account.balance -= old_amount
+        old_budget_delta = _budget_delta_for_transaction(old_type, old_amount)
+        if old_budget_delta:
+            previous_budget_allocations = _get_budget_allocations_for_transaction(
+                db,
+                user_id=current_user.id,
+                allocation_id=old_allocation_id,
+                category_id=old_category_id,
+            )
+            _apply_budget_delta(previous_budget_allocations, -old_budget_delta)
     
     # Update transaction
     update_data = transaction_update.dict(exclude_unset=True)
+    if "budget_entry_id" in update_data:
+        new_budget_entry_id = update_data.get("budget_entry_id")
+        if new_budget_entry_id:
+            budget_entry = (
+                db.query(BudgetEntry)
+                .filter(
+                    BudgetEntry.id == new_budget_entry_id,
+                    BudgetEntry.user_id == current_user.id,
+                )
+                .first()
+            )
+            if not budget_entry:
+                raise HTTPException(status_code=404, detail="Budget entry not found")
+        setattr(db_transaction, "budget_entry_id", new_budget_entry_id)
+        update_data.pop("budget_entry_id", None)
+
+    if "is_recurring" in update_data and not update_data["is_recurring"]:
+        update_data["recurrence_frequency"] = None
+    elif update_data.get("is_recurring") and "recurrence_frequency" not in update_data:
+        update_data["recurrence_frequency"] = (
+            db_transaction.recurrence_frequency or RecurrenceFrequency.MONTHLY
+        )
     for field, value in update_data.items():
         setattr(db_transaction, field, value)
     
@@ -270,6 +419,15 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
         elif db_transaction.transaction_type == TransactionType.TRANSFER and primary_account and destination_account:
             primary_account.balance -= db_transaction.amount + db_transaction.transfer_fee
             destination_account.balance += db_transaction.amount
+        new_budget_delta = _budget_delta_for_transaction(db_transaction.transaction_type, db_transaction.amount)
+        if new_budget_delta:
+            new_budget_allocations = _get_budget_allocations_for_transaction(
+                db,
+                user_id=current_user.id,
+                allocation_id=db_transaction.allocation_id,
+                category_id=db_transaction.category_id,
+            )
+            _apply_budget_delta(new_budget_allocations, new_budget_delta)
     
     db.commit()
     db.refresh(db_transaction)
@@ -312,6 +470,15 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db), curre
                 to_account = db.query(Account).filter(Account.id == db_transaction.transfer_to_account_id).first()
                 if to_account:
                     to_account.balance -= db_transaction.amount
+        budget_delta = _budget_delta_for_transaction(db_transaction.transaction_type, db_transaction.amount)
+        if budget_delta:
+            budget_allocations = _get_budget_allocations_for_transaction(
+                db,
+                user_id=current_user.id,
+                allocation_id=db_transaction.allocation_id,
+                category_id=db_transaction.category_id,
+            )
+            _apply_budget_delta(budget_allocations, -budget_delta)
     
     db.delete(db_transaction)
     db.commit()

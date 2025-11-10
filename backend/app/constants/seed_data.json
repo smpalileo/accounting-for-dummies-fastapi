@@ -112,6 +112,12 @@
       "description": "Gifts received from others",
       "color": "#BB8FCE",
       "is_expense": false
+    },
+    {
+      "name": "Savings",
+      "description": "Transfers earmarked for long-term savings goals",
+      "color": "#4C6EF5",
+      "is_expense": true
     }
   ],
   "allocations": [
@@ -122,7 +128,10 @@
       "description": "6-month emergency fund",
       "target_amount": 30000.00,
       "current_amount": 15000.00,
-      "monthly_target": 1000.00
+      "monthly_target": 1000.00,
+      "configuration": {
+        "goal_mode": "target_balance"
+      }
     },
     {
       "account_id": 1,
@@ -131,17 +140,129 @@
       "description": "Monthly spending budget",
       "target_amount": 3000.00,
       "current_amount": 0.00,
-      "monthly_target": 3000.00
+      "monthly_target": 3000.00,
+      "period_frequency": "monthly",
+      "period_start": "2025-08-01T00:00:00",
+      "period_end": "2025-09-01T00:00:00",
+      "configuration": {
+        "category_ids": [1, 2, 3, 4, 5]
+      }
     },
     {
       "account_id": 2,
       "name": "Vacation Fund",
-      "allocation_type": "GOAL",
+      "allocation_type": "SAVINGS",
       "description": "Save for annual vacation",
       "target_amount": 5000.00,
       "current_amount": 2000.00,
       "monthly_target": 300.00,
-      "target_date": "2024-12-31T00:00:00"
+      "target_date": "2024-12-31T00:00:00",
+      "configuration": {
+        "goal_mode": "target_balance"
+      }
+    },
+    {
+      "account_id": 1,
+      "name": "Investment Tracker",
+      "allocation_type": "SAVINGS",
+      "description": "Combined balance of checking, savings, and PayPal earmarked for investments",
+      "target_amount": 100000.00,
+      "current_amount": 42000.00,
+      "monthly_target": 1500.00,
+      "configuration": {
+        "goal_mode": "multi_account",
+        "account_ids": [1, 2, 5]
+      }
+    },
+    {
+      "account_id": 1,
+      "name": "Rainy Day Contributions",
+      "allocation_type": "SAVINGS",
+      "description": "Track the total contributions tagged as savings transactions",
+      "target_amount": 20000.00,
+      "current_amount": 4500.00,
+      "monthly_target": 500.00,
+      "configuration": {
+        "goal_mode": "transaction_total",
+        "savings_category_id": 13
+      }
+    }
+  ],
+  "budget_entries": [
+    {
+      "name": "Monthly Salary",
+      "entry_type": "INCOME",
+      "amount": 3200.00,
+      "currency": "USD",
+      "cadence": "MONTHLY",
+      "next_occurrence": "2025-09-11T09:00:00",
+      "lead_time_days": 3,
+      "account_id": 1,
+      "category_id": 9,
+      "is_autopay": true,
+      "description": "Projected salary credited to main checking",
+      "end_mode": "indefinite"
+    },
+    {
+      "name": "Streaming Subscription",
+      "entry_type": "EXPENSE",
+      "amount": 14.99,
+      "currency": "USD",
+      "cadence": "MONTHLY",
+      "next_occurrence": "2025-09-05T08:00:00",
+      "lead_time_days": 2,
+      "account_id": 3,
+      "category_id": 3,
+      "allocation_id": 2,
+      "is_autopay": true,
+      "description": "Netflix auto-pay each month",
+      "end_mode": "on_date",
+      "end_date": "2026-03-05T08:00:00"
+    },
+    {
+      "name": "Electric Bill",
+      "entry_type": "EXPENSE",
+      "amount": 1200.00,
+      "currency": "PHP",
+      "cadence": "MONTHLY",
+      "next_occurrence": "2025-09-20T07:00:00",
+      "lead_time_days": 5,
+      "account_id": 1,
+      "category_id": 4,
+      "is_autopay": false,
+      "description": "Power utility statement due monthly",
+      "end_mode": "indefinite"
+    },
+    {
+      "name": "Gym Membership",
+      "entry_type": "EXPENSE",
+      "amount": 45.00,
+      "currency": "PHP",
+      "cadence": "MONTHLY",
+      "next_occurrence": "2025-09-02T07:00:00",
+      "lead_time_days": 1,
+      "account_id": 1,
+      "category_id": 3,
+      "allocation_id": 2,
+      "is_autopay": true,
+      "description": "Monthly gym membership auto-charge",
+      "end_mode": "after_occurrences",
+      "max_occurrences": 12
+    },
+    {
+      "name": "Brokerage Auto-Deposit",
+      "entry_type": "EXPENSE",
+      "amount": 500.00,
+      "currency": "PHP",
+      "cadence": "MONTHLY",
+      "next_occurrence": "2025-09-15T09:00:00",
+      "lead_time_days": 3,
+      "account_id": 1,
+      "category_id": 13,
+      "allocation_id": 4,
+      "is_autopay": true,
+      "description": "Automatic transfer to brokerage account",
+      "end_mode": "indefinite"
     }
   ],
   "transactions": [
@@ -178,7 +299,8 @@
       "projected_amount": 3200.00,
       "projected_currency": "USD",
       "exchange_rate": 53.50,
-      "is_posted": true
+      "is_posted": true,
+      "budget_entry_id": 1
     },
     {
       "account_id": 1,
@@ -193,7 +315,8 @@
       "original_currency": "USD",
       "exchange_rate": 53.20,
       "is_posted": false,
-      "is_recurring": true
+      "is_recurring": true,
+      "budget_entry_id": 1
     },
     {
       "account_id": 3,
@@ -240,7 +363,42 @@
       "original_currency": "USD",
       "exchange_rate": 56.70,
       "is_posted": false,
-      "is_recurring": true
+      "is_recurring": true,
+      "budget_entry_id": 2
+    },
+    {
+      "account_id": 1,
+      "category_id": 3,
+      "amount": 45.00,
+      "description": "Gym membership auto-pay",
+      "transaction_type": "DEBIT",
+      "transaction_date": "2025-08-02T07:00:00",
+      "is_posted": true,
+      "is_recurring": true,
+      "budget_entry_id": 4
+    },
+    {
+      "account_id": 1,
+      "category_id": 4,
+      "amount": 0.00,
+      "description": "Projected September electric bill",
+      "transaction_type": "DEBIT",
+      "transaction_date": "2025-09-20T07:00:00",
+      "projected_amount": 1200.00,
+      "projected_currency": "PHP",
+      "is_posted": false,
+      "is_recurring": true,
+      "budget_entry_id": 3
+    },
+    {
+      "account_id": 1,
+      "category_id": 13,
+      "amount": 500.00,
+      "description": "Savings transfer - August",
+      "transaction_type": "DEBIT",
+      "transaction_date": "2025-08-15T10:00:00",
+      "is_posted": true,
+      "allocation_id": 5
     }
   ]
 }

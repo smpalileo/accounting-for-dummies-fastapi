@@ -29,12 +29,12 @@ export function Dashboard() {
     data: accountsData,
     isLoading: accountsLoading,
     error: accountsError,
-  } = useGetAccountsQuery({ is_active: true }, { skip: !isAuthenticated })
+  } = useGetAccountsQuery({ is_active: true, limit: 1000 }, { skip: !isAuthenticated })
   const {
     data: transactionsData,
     isLoading: transactionsLoading,
     error: transactionsError,
-  } = useGetTransactionsQuery({}, { skip: !isAuthenticated })
+  } = useGetTransactionsQuery({ limit: 1000 }, { skip: !isAuthenticated })
   const {
     data: goalsSummary,
     isLoading: goalsLoading,
@@ -48,8 +48,8 @@ export function Dashboard() {
   
   console.log('Dashboard hooks called:', { accountsLoading, transactionsLoading, goalsLoading, categoriesLoading })
 
-  const accounts = accountsData ?? []
-  const transactions = transactionsData ?? []
+  const accounts = useMemo(() => accountsData?.items ?? [], [accountsData])
+  const transactions = useMemo(() => transactionsData?.items ?? [], [transactionsData])
   const categories = categoriesData ?? []
 
   // Calculate date range for summary

@@ -10,6 +10,18 @@ class TransactionType(str, enum.Enum):
     CREDIT = "credit"
     TRANSFER = "transfer"
 
+
+class RecurrenceFrequency(str, enum.Enum):
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
+    SEMI_ANNUAL = "semi_annual"
+    ANNUAL = "annual"
+
+
+def _enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
     
@@ -18,6 +30,7 @@ class Transaction(Base):
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     allocation_id = Column(Integer, ForeignKey("allocations.id"), nullable=True)
+    budget_entry_id = Column(Integer, ForeignKey("budget_entries.id"), nullable=True)
     
     amount = Column(Float, nullable=False)
     currency = Column(Enum(CurrencyType), default=CurrencyType.PHP)
@@ -28,7 +41,10 @@ class Transaction(Base):
     exchange_rate = Column(Float, nullable=True)
     transfer_fee = Column(Float, nullable=False, default=0.0)
     description = Column(Text, nullable=True)
-    transaction_type = Column(Enum(TransactionType), nullable=False)
+    transaction_type = Column(
+        Enum(TransactionType, values_callable=_enum_values, name="transactiontype"),
+        nullable=False,
+    )
     is_posted = Column(Boolean, default=True)
     transfer_from_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     transfer_to_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
@@ -44,6 +60,10 @@ class Transaction(Base):
     # Transaction status
     is_reconciled = Column(Boolean, default=False)
     is_recurring = Column(Boolean, default=False)
+    recurrence_frequency = Column(
+        Enum(RecurrenceFrequency, values_callable=_enum_values, name="recurrencefrequency"),
+        nullable=True,
+    )
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -59,3 +79,4 @@ class Transaction(Base):
     transfer_to_account = relationship("Account", foreign_keys=[transfer_to_account_id], backref="transfer_in_transactions")
     category = relationship("Category", back_populates="transactions")
     allocation = relationship("Allocation", back_populates="transactions")
+    budget_entry = relationship("BudgetEntry", back_populates="transactions")

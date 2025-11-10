@@ -1,14 +1,15 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
-from app.models.transaction import TransactionType
+from app.models.transaction import TransactionType, RecurrenceFrequency
 from app.models.user import CurrencyType
 
 class TransactionBase(BaseModel):
     account_id: int = Field(..., gt=0)
     category_id: Optional[int] = Field(None, gt=0)
     allocation_id: Optional[int] = Field(None, gt=0)
-    amount: float = Field(..., gt=0)
+    budget_entry_id: Optional[int] = Field(None, gt=0)
+    amount: float = Field(..., ge=0)
     currency: CurrencyType = CurrencyType.PHP
     projected_amount: Optional[float] = Field(None, gt=0)
     projected_currency: Optional[CurrencyType] = None
@@ -31,6 +32,7 @@ class TransactionBase(BaseModel):
     # Transaction status
     is_reconciled: bool = False
     is_recurring: bool = False
+    recurrence_frequency: Optional[RecurrenceFrequency] = None
 
 class TransactionCreate(TransactionBase):
     pass
@@ -39,7 +41,8 @@ class TransactionUpdate(BaseModel):
     account_id: Optional[int] = Field(None, gt=0)
     category_id: Optional[int] = Field(None, gt=0)
     allocation_id: Optional[int] = Field(None, gt=0)
-    amount: Optional[float] = Field(None, gt=0)
+    budget_entry_id: Optional[int] = Field(None, gt=0)
+    amount: Optional[float] = Field(None, ge=0)
     currency: Optional[CurrencyType] = None
     projected_amount: Optional[float] = Field(None, gt=0)
     projected_currency: Optional[CurrencyType] = None
@@ -58,6 +61,7 @@ class TransactionUpdate(BaseModel):
     invoice_url: Optional[str] = None
     is_reconciled: Optional[bool] = None
     is_recurring: Optional[bool] = None
+    recurrence_frequency: Optional[RecurrenceFrequency] = None
 
 class TransactionResponse(TransactionBase):
     id: int
@@ -66,3 +70,9 @@ class TransactionResponse(TransactionBase):
     
     class Config:
         from_attributes = True
+
+
+class TransactionListResponse(BaseModel):
+    items: List[TransactionResponse]
+    total: int
+    has_more: bool

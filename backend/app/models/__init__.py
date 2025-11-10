@@ -5,6 +5,7 @@ from app.models.account import Account, AccountType
 from app.models.transaction import Transaction, TransactionType
 from app.models.category import Category
 from app.models.allocation import Allocation, AllocationType
+from app.models.budget_entry import BudgetEntry, BudgetEntryType
 
 # Update relationships
 Account.transactions = relationship(
@@ -12,7 +13,11 @@ Account.transactions = relationship(
     back_populates="account",
     foreign_keys=[Transaction.account_id],
 )
-Account.allocations = relationship("Allocation", back_populates="account")
+Account.allocations = relationship(
+    "Allocation",
+    back_populates="account",
+    foreign_keys=[Allocation.account_id],
+)
 Transaction.account = relationship(
     "Account",
     back_populates="transactions",
@@ -34,3 +39,17 @@ Transaction.transfer_to_account = relationship(
 Category.transactions = relationship("Transaction", back_populates="category")
 Allocation.account = relationship("Account", back_populates="allocations")
 Allocation.transactions = relationship("Transaction", back_populates="allocation")
+User.budget_entries = relationship("BudgetEntry", back_populates="user")
+Account.budget_entries = relationship("BudgetEntry", back_populates="account")
+Category.budget_entries = relationship("BudgetEntry", back_populates="category")
+Allocation.budget_entries = relationship("BudgetEntry", back_populates="allocation")
+Transaction.budget_entry = relationship(
+    "BudgetEntry",
+    back_populates="transactions",
+    foreign_keys=[Transaction.budget_entry_id],
+)
+BudgetEntry.transactions = relationship(
+    "Transaction",
+    back_populates="budget_entry",
+    foreign_keys=[Transaction.budget_entry_id],
+)

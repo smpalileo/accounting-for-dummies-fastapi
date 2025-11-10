@@ -39,6 +39,33 @@ export interface Allocation {
   current_amount: number
   monthly_target?: number
   target_date?: string
+  period_frequency?: 'daily' | 'weekly' | 'monthly' | 'quarterly'
+  period_start?: string
+  period_end?: string
+  is_active: boolean
+  created_at: string
+  updated_at?: string
+  configuration?: Record<string, unknown>
+}
+
+export interface BudgetEntry {
+  id: number
+  user_id: number
+  entry_type: 'income' | 'expense'
+  name: string
+  description?: string
+  amount: number
+  currency: CurrencyCode
+  cadence: 'monthly' | 'quarterly' | 'semi_annual' | 'annual'
+  next_occurrence: string
+  lead_time_days: number
+  end_mode: 'indefinite' | 'on_date' | 'after_occurrences'
+  end_date?: string
+  max_occurrences?: number
+  account_id?: number
+  category_id?: number
+  allocation_id?: number
+  is_autopay: boolean
   is_active: boolean
   created_at: string
   updated_at?: string
@@ -65,6 +92,7 @@ export interface Transaction {
   is_posted: boolean
   is_reconciled: boolean
   is_recurring: boolean
+  recurrence_frequency?: 'monthly' | 'quarterly' | 'semi_annual' | 'annual'
   transfer_fee: number
   transfer_from_account_id?: number
   transfer_to_account_id?: number
@@ -107,6 +135,12 @@ export interface AllocationProgress {
   remaining_amount: number
   target_date?: string
   days_remaining?: number
+}
+
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  has_more: boolean
 }
 
 export interface GoalsSummary {
@@ -154,13 +188,13 @@ const baseQueryWithAuth: typeof rawBaseQuery = async (args, api, extraOptions) =
 export const accountingApi = createApi({
   reducerPath: 'accountingApi',
   baseQuery: baseQueryWithAuth,
-  tagTypes: ['Account', 'Category', 'Transaction', 'Allocation'],
+  tagTypes: ['Account', 'Category', 'Transaction', 'Allocation', 'BudgetEntry'],
   endpoints: (builder) => ({
     // Accounts
-    getAccounts: builder.query<Account[], { account_type?: string; is_active?: boolean }>({
+    getAccounts: builder.query<PaginatedResponse<Account>, { account_type?: string; is_active?: boolean; limit?: number; offset?: number }>({
       query: (params) => ({
         url: 'accounts/',
-        params
+        params,
       }),
       providesTags: ['Account'],
     }),
@@ -233,10 +267,10 @@ export const accountingApi = createApi({
     }),
 
     // Allocations
-    getAllocations: builder.query<Allocation[], { account_id?: number; allocation_type?: string; is_active?: boolean }>({
+    getAllocations: builder.query<PaginatedResponse<Allocation>, { account_id?: number; allocation_type?: string; is_active?: boolean; limit?: number; offset?: number }>({
       query: (params) => ({
         url: 'allocations/',
-        params
+        params,
       }),
       providesTags: ['Allocation'],
     }),
@@ -276,20 +310,97 @@ export const accountingApi = createApi({
       providesTags: ['Allocation'],
     }),
 
+    // Budget entries
+    getBudgetEntries: builder.query<PaginatedResponse<BudgetEntry>, {
+      entry_type?: 'income' | 'expense'
+      is_active?: boolean
+      before?: string
+      after?: string
+      limit?: number
+      offset?: number
+    }>({
+      query: (params) => ({
+        url: 'budget-entries/',
+        params,
+      }),
+      providesTags: ['BudgetEntry'],
+    }),
+    createBudgetEntry: builder.mutation<BudgetEntry, Partial<BudgetEntry>>({
+      query: (entry) => ({
+        url: 'budget-entries/',
+        method: 'POST',
+        body: entry,
+      }),
+      invalidatesTags: ['BudgetEntry', 'Transaction', 'Allocation'],
+    }),
+    updateBudgetEntry: builder.mutation<BudgetEntry, { id: number; data: Partial<BudgetEntry> }>({
+      query: ({ id, data }) => ({
+        url: `budget-entries/${id}`,
+        method: 'PUT',
+        body: data,
+      }),
+      invalidatesTags: ['BudgetEntry', 'Transaction', 'Allocation'],
+    }),
+    deleteBudgetEntry: builder.mutation<void, number>({
+      query: (id) => ({
+        url: `budget-entries/${id}`,
+        method: 'DELETE',
+      }),
+      invalidatesTags: ['BudgetEntry', 'Transaction', 'Allocation'],
+    }),
+
     // Transactions
-    getTransactions: builder.query<Transaction[], {
-      account_id?: number;
-      category_id?: number;
+    getTransactions: builder.query<PaginatedResponse<Transaction>, {
+      account_ids?: number[];
+      category_ids?: number[];
       allocation_id?: number;
-      transaction_type?: string;
+      transaction_types?: string[];
       start_date?: string;
       end_date?: string;
       is_reconciled?: boolean;
+      search?: string;
+      limit?: number;
+      offset?: number;
     }>({
-      query: (params) => ({
-        url: 'transactions/',
-        params
-      }),
+      query: (params) => {
+        const searchParams = new URLSearchParams()
+
+        if (params?.account_ids?.length) {
+          params.account_ids.forEach((id) => searchParams.append('account_ids', String(id)))
+        }
+        if (params?.category_ids?.length) {
+          params.category_ids.forEach((id) => searchParams.append('category_ids', String(id)))
+        }
+        if (params?.transaction_types?.length) {
+          params.transaction_types.forEach((value) => searchParams.append('transaction_types', value))
+        }
+        if (typeof params?.allocation_id === 'number') {
+          searchParams.set('allocation_id', String(params.allocation_id))
+        }
+        if (params?.start_date) {
+          searchParams.set('start_date', params.start_date)
+        }
+        if (params?.end_date) {
+          searchParams.set('end_date', params.end_date)
+        }
+        if (typeof params?.is_reconciled === 'boolean') {
+          searchParams.set('is_reconciled', String(params.is_reconciled))
+        }
+        if (params?.search) {
+          searchParams.set('search', params.search)
+        }
+        if (typeof params?.limit === 'number') {
+          searchParams.set('limit', String(params.limit))
+        }
+        if (typeof params?.offset === 'number') {
+          searchParams.set('offset', String(params.offset))
+        }
+
+        return {
+          url: 'transactions/',
+          params: searchParams,
+        }
+      },
       providesTags: ['Transaction'],
     }),
     getTransaction: builder.query<Transaction, number>({
@@ -302,7 +413,7 @@ export const accountingApi = createApi({
         method: 'POST',
         body: transaction,
       }),
-      invalidatesTags: ['Transaction', 'Account'],
+      invalidatesTags: ['Transaction', 'Account', 'Allocation'],
     }),
     updateTransaction: builder.mutation<Transaction, { id: number; data: Partial<Transaction> }>({
       query: ({ id, data }) => ({
@@ -310,14 +421,14 @@ export const accountingApi = createApi({
         method: 'PUT',
         body: data,
       }),
-      invalidatesTags: ['Transaction', 'Account'],
+      invalidatesTags: ['Transaction', 'Account', 'Allocation'],
     }),
     deleteTransaction: builder.mutation<void, number>({
       query: (id) => ({
         url: `transactions/${id}`,
         method: 'DELETE',
       }),
-      invalidatesTags: ['Transaction', 'Account'],
+      invalidatesTags: ['Transaction', 'Account', 'Allocation'],
     }),
     uploadReceipt: builder.mutation<{ message: string; file_url: string }, { transaction_id: number; file: File }>({
       query: ({ transaction_id, file }) => {
@@ -344,6 +455,7 @@ export const accountingApi = createApi({
 export const {
   // Account hooks
   useGetAccountsQuery,
+  useLazyGetAccountsQuery,
   useGetAccountQuery,
   useCreateAccountMutation,
   useUpdateAccountMutation,
@@ -359,15 +471,24 @@ export const {
   
   // Allocation hooks
   useGetAllocationsQuery,
+  useLazyGetAllocationsQuery,
   useGetAllocationQuery,
   useCreateAllocationMutation,
   useUpdateAllocationMutation,
   useDeleteAllocationMutation,
   useGetAllocationProgressQuery,
   useGetGoalsSummaryQuery,
+
+  // Budget entry hooks
+  useGetBudgetEntriesQuery,
+  useLazyGetBudgetEntriesQuery,
+  useCreateBudgetEntryMutation,
+  useUpdateBudgetEntryMutation,
+  useDeleteBudgetEntryMutation,
   
   // Transaction hooks
   useGetTransactionsQuery,
+  useLazyGetTransactionsQuery,
   useGetTransactionQuery,
   useCreateTransactionMutation,
   useUpdateTransactionMutation,

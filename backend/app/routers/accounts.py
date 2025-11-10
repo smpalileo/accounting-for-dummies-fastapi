@@ -1,22 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from typing import List, Optional
+from typing import Optional
 from app.core.database import get_db
 from app.core.auth import get_current_active_user
 from app.models.account import Account, AccountType
 from app.models.user import User
-from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate
+from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate, AccountListResponse
 from datetime import datetime
 
 router = APIRouter()
 
-@router.get("/", response_model=List[AccountResponse])
+@router.get("/", response_model=AccountListResponse)
 def get_accounts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
     account_type: Optional[str] = Query(None, description="Filter by account type"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status")
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    limit: int = Query(10, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     """Get all accounts with optional filtering"""
     query = db.query(Account).filter(Account.user_id == current_user.id)
@@ -32,8 +34,15 @@ def get_accounts(
     if is_active is not None:
         query = query.filter(Account.is_active == is_active)
     
-    accounts = query.all()
-    return accounts
+    total = query.count()
+    accounts = (
+        query.order_by(Account.created_at.desc(), Account.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    has_more = offset + len(accounts) < total
+    return {"items": accounts, "total": total, "has_more": has_more}
 
 @router.post("/", response_model=AccountResponse)
 def create_account(account: AccountCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):

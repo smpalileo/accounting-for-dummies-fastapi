@@ -1,20 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Optional
 from app.core.database import get_db
 from app.models.allocation import Allocation, AllocationType
-from app.schemas.allocation import AllocationCreate, AllocationResponse, AllocationUpdate
+from app.schemas.allocation import AllocationCreate, AllocationResponse, AllocationUpdate, AllocationListResponse
 from app.models.account import Account
 from datetime import datetime
 
 router = APIRouter()
 
-@router.get("/", response_model=List[AllocationResponse])
+@router.get("/", response_model=AllocationListResponse)
 def get_allocations(
     db: Session = Depends(get_db),
     account_id: Optional[int] = Query(None, description="Filter by account ID"),
     allocation_type: Optional[str] = Query(None, description="Filter by allocation type"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status")
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    limit: int = Query(10, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     """Get all allocations with optional filtering"""
     query = db.query(Allocation)
@@ -31,8 +33,15 @@ def get_allocations(
     if is_active is not None:
         query = query.filter(Allocation.is_active == is_active)
     
-    allocations = query.all()
-    return allocations
+    total = query.count()
+    allocations = (
+        query.order_by(Allocation.created_at.desc(), Allocation.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    has_more = offset + len(allocations) < total
+    return {"items": allocations, "total": total, "has_more": has_more}
 
 @router.post("/", response_model=AllocationResponse)
 def create_allocation(allocation: AllocationCreate, db: Session = Depends(get_db)):
