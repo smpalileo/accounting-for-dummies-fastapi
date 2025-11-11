@@ -185,8 +185,13 @@ def seed_database():
                 transaction_data["category_id"] = category_id_mapping[original_category_id]
             if transaction_data.get("allocation_id"):
                 transaction_data["allocation_id"] = allocation_id_mapping[transaction_data["allocation_id"]]
+            budget_entry_ref = None
             if transaction_data.get("budget_entry_id"):
-                transaction_data["budget_entry_id"] = budget_entry_id_mapping[transaction_data["budget_entry_id"]]
+                mapped_id = budget_entry_id_mapping[transaction_data["budget_entry_id"]]
+                transaction_data["budget_entry_id"] = mapped_id
+                budget_entry_ref = next((entry for entry in budget_entries if entry.id == mapped_id), None)
+            else:
+                transaction_data["budget_entry_id"] = None
             if transaction_data.get("transfer_from_account_id"):
                 transaction_data["transfer_from_account_id"] = account_id_mapping[
                     transaction_data["transfer_from_account_id"]
@@ -204,14 +209,12 @@ def seed_database():
                 transaction_data["projected_currency"] = account_ref.currency
             if transaction_data.get("transfer_fee") is None:
                 transaction_data["transfer_fee"] = 0.0
-            recurrence_frequency = transaction_data.get("recurrence_frequency")
-            if recurrence_frequency:
-                transaction_data["recurrence_frequency"] = RecurrenceFrequency(
-                    recurrence_frequency.lower()
-                )
-            elif transaction_data.get("is_recurring"):
-                transaction_data["recurrence_frequency"] = RecurrenceFrequency.MONTHLY
+            transaction_data.pop("is_recurring", None)
+            if budget_entry_ref:
+                transaction_data["is_recurring"] = True
+                transaction_data["recurrence_frequency"] = budget_entry_ref.cadence
             else:
+                transaction_data["is_recurring"] = False
                 transaction_data["recurrence_frequency"] = None
             transaction = Transaction(**transaction_data)
             db.add(transaction)

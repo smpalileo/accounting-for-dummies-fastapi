@@ -284,8 +284,7 @@
       "description": "Gas station fill-up",
       "transaction_type": "DEBIT",
       "transaction_date": "2025-08-29T16:45:00",
-      "is_posted": true,
-      "is_recurring": false
+      "is_posted": true
     },
     {
       "account_id": 1,
@@ -315,7 +314,6 @@
       "original_currency": "USD",
       "exchange_rate": 53.20,
       "is_posted": false,
-      "is_recurring": true,
       "budget_entry_id": 1
     },
     {
@@ -363,7 +361,6 @@
       "original_currency": "USD",
       "exchange_rate": 56.70,
       "is_posted": false,
-      "is_recurring": true,
       "budget_entry_id": 2
     },
     {
@@ -374,7 +371,6 @@
       "transaction_type": "DEBIT",
       "transaction_date": "2025-08-02T07:00:00",
       "is_posted": true,
-      "is_recurring": true,
       "budget_entry_id": 4
     },
     {
@@ -387,7 +383,6 @@
       "projected_amount": 1200.00,
       "projected_currency": "PHP",
       "is_posted": false,
-      "is_recurring": true,
       "budget_entry_id": 3
     },
     {

@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useLazyGetTransactionsQuery, useGetAccountsQuery, useGetCategoriesQuery, useCreateTransactionMutation, useUpdateTransactionMutation, useDeleteTransactionMutation } from '../store/api'
+import { useLazyGetTransactionsQuery, useGetAccountsQuery, useGetCategoriesQuery, useGetBudgetEntriesQuery, useCreateTransactionMutation, useUpdateTransactionMutation, useDeleteTransactionMutation } from '../store/api'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import type { Transaction } from '../store/api'
+import type { Transaction, BudgetEntry } from '../store/api'
 import { useAuth } from '../contexts/AuthContext'
 import { formatCurrency, getCurrencySymbol, CurrencyCode, CURRENCY_CONFIGS } from '../utils/currency'
 
@@ -70,14 +70,6 @@ const formatRelativeDate = (dateString: string) => {
   return formatDateWithOrdinal(date)
 }
 
-const formatRecurrenceLabel = (frequency?: string) => {
-  if (!frequency) {
-    return 'Recurring'
-  }
-  const key = frequency as RecurrenceFrequency
-  return RECURRENCE_LABELS[key] ?? 'Recurring'
-}
-
 const getMonthStart = (date: Date) => new Date(date.getFullYear(), date.getMonth(), 1)
 
 const getMonthEnd = (date: Date) => new Date(date.getFullYear(), date.getMonth() + 1, 0)
@@ -107,6 +99,7 @@ type TransactionFormState = {
   account_id: number
   category_id?: number
   allocation_id?: number
+  budget_entry_id?: number
   amount?: number
   currency: CurrencyCode
   projected_amount?: number
@@ -120,8 +113,6 @@ type TransactionFormState = {
   transaction_date: string
   posting_date?: string
   is_posted: boolean
-  is_recurring: boolean
-  recurrence_frequency: RecurrenceFrequency
   transfer_from_account_id?: number
   transfer_to_account_id?: number
 }
@@ -151,6 +142,7 @@ export function TransactionsPage() {
     account_id: 0,
     category_id: undefined,
     allocation_id: undefined,
+    budget_entry_id: undefined,
     amount: undefined,
     currency: fallbackCurrency,
     projected_amount: undefined,
@@ -164,8 +156,6 @@ export function TransactionsPage() {
     transaction_date: new Date().toISOString().split('T')[0],
     posting_date: undefined,
     is_posted: true,
-    is_recurring: false,
-    recurrence_frequency: 'monthly',
     transfer_from_account_id: undefined,
     transfer_to_account_id: undefined,
     ...overrides,
@@ -216,16 +206,6 @@ export function TransactionsPage() {
     ],
     []
   )
-  const recurrenceOptions = useMemo(
-    () => [
-      { value: 'monthly' as RecurrenceFrequency, label: 'Monthly' },
-      { value: 'quarterly' as RecurrenceFrequency, label: 'Quarterly' },
-      { value: 'semi_annual' as RecurrenceFrequency, label: 'Semi-Annual' },
-      { value: 'annual' as RecurrenceFrequency, label: 'Annual' },
-    ],
-    []
-  )
-
   const resetFilters = useCallback(() => {
     const freshStart = getMonthStart(new Date())
     const freshEnd = getMonthEnd(freshStart)
@@ -340,24 +320,6 @@ export function TransactionsPage() {
     setEndDate((prev) => (prev === nextEnd ? prev : nextEnd))
   }, [currentMonth, isCustomRange])
 
-  const actionModalMeta = useMemo(() => {
-    if (!actionTransaction) {
-      return null
-    }
-    return {
-      transactionDate: formatDateWithOrdinal(new Date(actionTransaction.transaction_date)),
-      transactionRelative: formatRelativeDate(actionTransaction.transaction_date),
-      postingDate: actionTransaction.posting_date
-        ? formatDateWithOrdinal(new Date(actionTransaction.posting_date))
-        : 'Pending',
-      postingRelative: actionTransaction.posting_date ? formatRelativeDate(actionTransaction.posting_date) : null,
-      typeLabel: TRANSACTION_TYPE_LABELS[actionTransaction.transaction_type],
-      recurrenceLabel: actionTransaction.is_recurring
-        ? formatRecurrenceLabel(actionTransaction.recurrence_frequency)
-        : null,
-    }
-  }, [actionTransaction])
-
   const toISODateTime = useCallback((dateValue: string, endOfDay = false) => {
     if (!dateValue) {
       return undefined
@@ -375,10 +337,14 @@ export function TransactionsPage() {
     { is_active: true, limit: 100 },
     { skip: !isAuthenticated }
   )
-  const { data: categoriesData, isLoading: isCategoriesLoading } = useGetCategoriesQuery(
-    { is_active: true },
-    { skip: !isAuthenticated }
-  )
+  const {
+    data: categoriesData,
+    isLoading: isCategoriesLoading,
+  } = useGetCategoriesQuery({ is_active: true }, { skip: !isAuthenticated })
+  const {
+    data: budgetEntriesData,
+    isLoading: budgetEntriesLoading,
+  } = useGetBudgetEntriesQuery({ is_active: true, limit: 200 }, { skip: !isAuthenticated })
   
   const [createTransaction] = useCreateTransactionMutation()
   const [updateTransaction] = useUpdateTransactionMutation()
@@ -386,6 +352,7 @@ export function TransactionsPage() {
 
   const accounts = useMemo(() => accountsData?.items ?? [], [accountsData])
   const categories = useMemo(() => categoriesData ?? [], [categoriesData])
+  const budgetEntries = useMemo(() => budgetEntriesData?.items ?? [], [budgetEntriesData])
   const limit = 10
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [totalTransactions, setTotalTransactions] = useState(0)
@@ -531,25 +498,25 @@ export function TransactionsPage() {
     [accounts, formData.account_id, formData.transfer_from_account_id]
   )
 
-  const isLoading = isInitialLoading || isAccountsLoading || isCategoriesLoading
+  const matchingBudgetEntries = useMemo(() => {
+    if (formData.transaction_type === 'transfer') {
+      return []
+    }
+    const targetType = formData.transaction_type === 'credit' ? 'income' : 'expense'
+    return budgetEntries.filter((entry) => entry.is_active && entry.entry_type === targetType)
+  }, [budgetEntries, formData.transaction_type])
+
+  const selectedBudgetEntry = formData.budget_entry_id
+    ? budgetEntries.find((entry) => entry.id === formData.budget_entry_id)
+    : undefined
+
+  const isLoading = isInitialLoading || isAccountsLoading || isCategoriesLoading || budgetEntriesLoading
 
   const orderedTransactions = useMemo(() => {
     const posted = transactions.filter((transaction) => transaction.is_posted)
     const pending = transactions.filter((transaction) => !transaction.is_posted)
     return [...posted, ...pending]
   }, [transactions])
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
-  }
-
-  if (!isAuthenticated) {
-    return null // Will redirect
-  }
 
   const formCurrencySymbol = getCurrencySymbol(formData.currency)
   const resolvedProjectedCurrency = formData.projected_currency ?? formData.currency
@@ -575,23 +542,32 @@ export function TransactionsPage() {
 
   const handleTypeChange = (nextType: Transaction['transaction_type']) => {
     setFormData((prev) => {
-      const base: TransactionFormState = {
-        ...prev,
-        transaction_type: nextType,
-      }
+      let nextBudgetEntryId = prev.budget_entry_id
       if (nextType === 'transfer') {
-        return {
-          ...base,
-          category_id: undefined,
-          allocation_id: undefined,
-          transfer_from_account_id: prev.account_id || prev.transfer_from_account_id,
+        nextBudgetEntryId = undefined
+      } else if (nextBudgetEntryId) {
+        const linkedEntry = budgetEntries.find((entry) => entry.id === nextBudgetEntryId)
+        const expectedType = nextType === 'credit' ? 'income' : 'expense'
+        if (!linkedEntry || linkedEntry.entry_type !== expectedType) {
+          nextBudgetEntryId = undefined
         }
       }
+
       return {
-        ...base,
-        transfer_from_account_id: undefined,
-        transfer_to_account_id: undefined,
-        transfer_fee: 0,
+        ...prev,
+        transaction_type: nextType,
+        budget_entry_id: nextBudgetEntryId,
+        category_id: nextType === 'transfer' ? undefined : prev.category_id,
+        allocation_id: nextType === 'transfer' ? undefined : prev.allocation_id,
+        transfer_fee: nextType === 'transfer' ? prev.transfer_fee : 0,
+        transfer_from_account_id:
+          nextType === 'transfer' ? prev.account_id || prev.transfer_from_account_id : undefined,
+        transfer_to_account_id:
+          nextType === 'transfer'
+            ? prev.transfer_to_account_id && prev.transfer_to_account_id !== (prev.account_id || prev.transfer_from_account_id)
+              ? prev.transfer_to_account_id
+              : undefined
+            : undefined,
       }
     })
   }
@@ -664,7 +640,6 @@ export function TransactionsPage() {
             ? new Date().toISOString()
             : undefined,
         is_posted: formData.is_posted,
-        is_recurring: formData.is_recurring,
         transfer_fee: formData.transaction_type === 'transfer' ? formData.transfer_fee || 0 : 0,
         transfer_from_account_id:
           formData.transaction_type === 'transfer'
@@ -674,9 +649,9 @@ export function TransactionsPage() {
           formData.transaction_type === 'transfer' ? formData.transfer_to_account_id : undefined,
         category_id: formData.transaction_type === 'transfer' ? undefined : formData.category_id,
         allocation_id: formData.transaction_type === 'transfer' ? undefined : formData.allocation_id,
+        budget_entry_id: formData.transaction_type === 'transfer' ? undefined : formData.budget_entry_id,
         projected_amount: projectedAmount ?? undefined,
         projected_currency: projectedCurrency,
-        recurrence_frequency: formData.is_recurring ? formData.recurrence_frequency : undefined,
       }
 
       if (formData.is_posted) {
@@ -714,6 +689,7 @@ export function TransactionsPage() {
       account_id: transaction.account_id,
         category_id: transaction.category_id ?? undefined,
         allocation_id: transaction.allocation_id ?? undefined,
+        budget_entry_id: transaction.budget_entry_id ?? undefined,
       amount: transaction.amount,
         currency: (transaction.currency as CurrencyCode) || fallbackCurrency,
         projected_amount: transaction.projected_amount ?? undefined,
@@ -732,8 +708,6 @@ export function TransactionsPage() {
           ? new Date(transaction.posting_date).toISOString().split('T')[0]
           : undefined,
         is_posted: transaction.is_posted,
-        is_recurring: transaction.is_recurring,
-        recurrence_frequency: transaction.recurrence_frequency ?? 'monthly',
         transfer_from_account_id: transaction.transaction_type === 'transfer'
           ? transaction.transfer_from_account_id ?? transaction.account_id
           : undefined,
@@ -854,80 +828,146 @@ export function TransactionsPage() {
     resetPostingFormState()
   }
 
-  const handleToggleRecurring = async (transaction: Transaction) => {
-    try {
-      const nextIsRecurring = !transaction.is_recurring
-      const nextFrequency: RecurrenceFrequency | undefined = nextIsRecurring
-        ? (transaction.recurrence_frequency as RecurrenceFrequency) || 'monthly'
-        : undefined
-      await updateTransaction({
-        id: transaction.id,
-        data: {
-          is_recurring: nextIsRecurring,
-          recurrence_frequency: nextFrequency,
-        },
-      }).unwrap()
-      const updatedTransaction: Transaction = {
-        ...transaction,
-        is_recurring: nextIsRecurring,
-        recurrence_frequency: nextFrequency,
-      }
-      if (actionTransaction?.id === transaction.id) {
-        setActionTransaction(updatedTransaction)
-      }
-      setTransactions((prev) => prev.map((item) => (item.id === transaction.id ? updatedTransaction : item)))
-    } catch (error) {
-      console.error('Error toggling recurring status:', error)
-    }
-  }
-
   const openEditFromModal = (transaction: Transaction) => {
     closeActionModal()
     handleEdit(transaction)
   }
 
-  const getTransactionMeta = (transaction: Transaction) => {
-    const primaryAccount = accounts.find((a) => a.id === transaction.account_id)
-    const fromAccount = transaction.transfer_from_account_id
-      ? accounts.find((a) => a.id === transaction.transfer_from_account_id)
-      : undefined
-    const toAccount = transaction.transfer_to_account_id
-      ? accounts.find((a) => a.id === transaction.transfer_to_account_id)
-      : undefined
-    const currencyCode = (transaction.currency as CurrencyCode) || fallbackCurrency
-    const amountLabel = formatCurrency(transaction.amount, currencyCode)
-    const projectedLabel =
-      transaction.projected_amount && transaction.projected_currency
-        ? formatCurrency(transaction.projected_amount, transaction.projected_currency as CurrencyCode)
+  const getTransactionMeta = useCallback(
+    (transaction: Transaction) => {
+      const primaryAccount = accounts.find((a) => a.id === transaction.account_id)
+      const fromAccount = transaction.transfer_from_account_id
+        ? accounts.find((a) => a.id === transaction.transfer_from_account_id)
+        : undefined
+      const toAccount = transaction.transfer_to_account_id
+        ? accounts.find((a) => a.id === transaction.transfer_to_account_id)
+        : undefined
+      const currencyCode = (transaction.currency as CurrencyCode) || fallbackCurrency
+      const amountLabel = formatCurrency(transaction.amount, currencyCode)
+      const projectedLabel =
+        !transaction.is_posted && transaction.projected_amount && transaction.projected_currency
+          ? formatCurrency(transaction.projected_amount, transaction.projected_currency as CurrencyCode)
+          : null
+      const transferFeeLabel =
+        transaction.transfer_fee && transaction.transfer_fee > 0
+          ? formatCurrency(transaction.transfer_fee, currencyCode)
+          : null
+      const typeBadgeStyles =
+        transaction.transaction_type === 'credit'
+          ? 'bg-green-100 text-green-700'
+          : transaction.transaction_type === 'debit'
+          ? 'bg-red-100 text-red-700'
+          : 'bg-blue-100 text-blue-700'
+      const amountClass =
+        transaction.transaction_type === 'credit'
+          ? 'text-green-600'
+          : transaction.transaction_type === 'debit'
+          ? 'text-red-600'
+          : 'text-blue-600'
+      const category = transaction.category_id
+        ? categories.find((cat) => cat.id === transaction.category_id)
+        : undefined
+      const budgetEntry = transaction.budget_entry_id
+        ? budgetEntries.find((entry) => entry.id === transaction.budget_entry_id)
+        : undefined
+      const scheduleLabel = budgetEntry
+        ? `${budgetEntry.name} • ${RECURRENCE_LABELS[budgetEntry.cadence]}`
         : null
-    const transferFeeLabel =
-      transaction.transfer_fee && transaction.transfer_fee > 0
-        ? formatCurrency(transaction.transfer_fee, currencyCode)
-        : null
-    const typeBadgeStyles =
-      transaction.transaction_type === 'credit'
-        ? 'bg-green-100 text-green-800'
-        : transaction.transaction_type === 'debit'
-        ? 'bg-red-100 text-red-800'
-        : 'bg-blue-100 text-blue-800'
-    const amountClass =
-      transaction.transaction_type === 'credit'
-        ? 'text-green-600'
-        : transaction.transaction_type === 'debit'
-        ? 'text-red-600'
-        : 'text-blue-600'
 
-    return {
-      primaryAccount,
-      fromAccount,
-      toAccount,
-      category: categories.find((c) => c.id === transaction.category_id),
-      amountLabel,
-      projectedLabel,
-      transferFeeLabel,
-      typeBadgeStyles,
-      amountClass,
+      return {
+        primaryAccount,
+        fromAccount,
+        toAccount,
+        category,
+        amountLabel,
+        projectedLabel,
+        transferFeeLabel,
+        typeBadgeStyles,
+        amountClass,
+        budgetEntry,
+        scheduleLabel,
+      }
+    },
+    [accounts, categories, fallbackCurrency, budgetEntries]
+  )
+
+  const actionModalMeta = useMemo(() => {
+    if (!actionTransaction) {
+      return null
     }
+    return {
+      transactionDate: formatDateWithOrdinal(new Date(actionTransaction.transaction_date)),
+      transactionRelative: formatRelativeDate(actionTransaction.transaction_date),
+      postingDate: actionTransaction.posting_date
+        ? formatDateWithOrdinal(new Date(actionTransaction.posting_date))
+        : 'Pending',
+      postingRelative: actionTransaction.posting_date ? formatRelativeDate(actionTransaction.posting_date) : null,
+      typeLabel: TRANSACTION_TYPE_LABELS[actionTransaction.transaction_type],
+    }
+  }, [actionTransaction])
+
+  const actionMeta = useMemo(() => (actionTransaction ? getTransactionMeta(actionTransaction) : null), [actionTransaction, getTransactionMeta])
+
+  const actionTransferMeta = useMemo(() => {
+    if (!actionTransaction || actionTransaction.transaction_type !== 'transfer') {
+      return null
+    }
+    return getTransactionMeta(actionTransaction)
+  }, [actionTransaction, getTransactionMeta])
+
+  const actionSchedule = actionMeta?.budgetEntry ?? null
+
+  const handleBudgetEntrySelect = useCallback((entry: BudgetEntry | undefined) => {
+    if (!entry) {
+      setFormData((prev) => ({
+        ...prev,
+        budget_entry_id: undefined,
+      }))
+      return
+    }
+
+    setFormData((prev) => {
+      const nextAccountId = entry.account_id ?? prev.account_id
+      const nextAccount = nextAccountId ? accounts.find((acc) => acc.id === nextAccountId) : undefined
+      const nextCurrency = (entry.currency as CurrencyCode) || (nextAccount?.currency as CurrencyCode) || prev.currency
+      const updated: TransactionFormState = {
+        ...prev,
+        budget_entry_id: entry.id,
+        account_id: nextAccountId,
+        currency: nextCurrency,
+        projected_currency: prev.projected_currency ?? nextCurrency,
+      }
+
+      if (entry.category_id) {
+        updated.category_id = entry.category_id
+      }
+      if (entry.allocation_id) {
+        updated.allocation_id = entry.allocation_id
+      }
+      if (!prev.description && entry.description) {
+        updated.description = entry.description
+      }
+      if (entry.amount) {
+        if (prev.is_posted) {
+          updated.amount = prev.amount && prev.amount > 0 ? prev.amount : entry.amount
+        } else {
+          updated.projected_amount = prev.projected_amount && prev.projected_amount > 0 ? prev.projected_amount : entry.amount
+        }
+      }
+      return updated
+    })
+  }, [accounts])
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return null // Will redirect
   }
 
   if (isLoading) {
@@ -1196,12 +1236,12 @@ export function TransactionsPage() {
               transferFeeLabel,
               typeBadgeStyles,
               amountClass,
+              scheduleLabel,
             } = getTransactionMeta(transaction)
             const relativeDate = formatRelativeDate(transaction.transaction_date)
             const exactDate = formatDateWithOrdinal(new Date(transaction.transaction_date))
             const postedDate = transaction.posting_date ? formatDateWithOrdinal(new Date(transaction.posting_date)) : null
             const typeLabel = TRANSACTION_TYPE_LABELS[transaction.transaction_type]
-            const recurrenceChipLabel = transaction.is_recurring ? formatRecurrenceLabel(transaction.recurrence_frequency) : null
             const cardStateClasses = transaction.is_posted ? '' : 'bg-gray-50 border border-gray-100'
             const description = transaction.description?.trim() || 'Untitled transaction'
                 
@@ -1243,12 +1283,12 @@ export function TransactionsPage() {
                           </svg>
                           {transaction.transaction_type === 'transfer' ? 'Transfer' : category?.name || 'Uncategorized'}
                       </span>
-                        {recurrenceChipLabel && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-1 text-purple-700">
+                        {scheduleLabel && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-1 text-indigo-700">
                             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
-                            {recurrenceChipLabel}
+                            {scheduleLabel}
                           </span>
                         )}
                         {transferFeeLabel && (
@@ -1395,11 +1435,59 @@ export function TransactionsPage() {
                       {actionTransaction.is_posted ? 'Posted' : 'Planned'}
                     </dd>
                   </div>
-                  {actionModalMeta?.recurrenceLabel && (
-                    <div className="flex justify-between">
-                      <dt>Recurring</dt>
-                      <dd>{actionModalMeta.recurrenceLabel}</dd>
-                    </div>
+                  {actionTransaction.transaction_type === 'transfer' && (
+                    <>
+                      <div className="flex justify-between gap-3">
+                        <dt>From</dt>
+                        <dd className="text-right">
+                          {actionTransferMeta?.fromAccount?.name || actionTransferMeta?.primaryAccount?.name || 'Source account'}
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>To</dt>
+                        <dd className="text-right">
+                          {actionTransferMeta?.toAccount?.name || 'Destination account'}
+                        </dd>
+                      </div>
+                      {actionTransferMeta?.transferFeeLabel && (
+                        <div className="flex justify-between gap-3">
+                          <dt>Transfer Fee</dt>
+                          <dd className="text-right text-rose-600">{actionTransferMeta.transferFeeLabel}</dd>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {actionSchedule && (
+                    <>
+                      <div className="flex justify-between gap-3">
+                        <dt>Schedule</dt>
+                        <dd className="text-right text-indigo-700 font-medium">{actionSchedule.name}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Cadence</dt>
+                        <dd>{RECURRENCE_LABELS[actionSchedule.cadence]}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Scheduled Amount</dt>
+                        <dd>{formatCurrency(actionSchedule.amount, actionSchedule.currency)}</dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt>Next Occurrence</dt>
+                        <dd>{formatDateWithOrdinal(new Date(actionSchedule.next_occurrence))}</dd>
+                      </div>
+                      {actionSchedule.lead_time_days ? (
+                        <div className="flex justify-between gap-3 text-xs text-gray-500">
+                          <dt>Reminder</dt>
+                          <dd>{actionSchedule.lead_time_days} day{actionSchedule.lead_time_days === 1 ? '' : 's'} before</dd>
+                        </div>
+                      ) : null}
+                      {actionSchedule.is_autopay && (
+                        <div className="flex justify-between gap-3 text-xs text-indigo-600">
+                          <dt>Autopay</dt>
+                          <dd>Enabled</dd>
+                        </div>
+                      )}
+                    </>
                   )}
                 </dl>
               </div>
@@ -1428,19 +1516,6 @@ export function TransactionsPage() {
                     Mark as Posted
                   </button>
                 )}
-                <button
-                  onClick={() => handleToggleRecurring(actionTransaction)}
-                  className={`flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-semibold transition-colors duration-200 ${
-                    actionTransaction.is_recurring
-                      ? 'bg-purple-50 text-purple-700 hover:bg-purple-100'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582M20 20v-5h-.581M5 9a7 7 0 0112.906-2M19 15a7 7 0 01-12.906 2" />
-                  </svg>
-                  {actionTransaction.is_recurring ? 'Stop Recurring' : 'Mark as Recurring'}
-                </button>
                 <button
                   onClick={() => openEditFromModal(actionTransaction)}
                   className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors duration-200 hover:bg-blue-700"
@@ -1878,49 +1953,45 @@ export function TransactionsPage() {
                   />
                   <span>Mark as posted</span>
                 </label>
-                <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    checked={formData.is_recurring}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        is_recurring: e.target.checked,
-                        recurrence_frequency: e.target.checked
-                          ? prev.recurrence_frequency || 'monthly'
-                          : prev.recurrence_frequency,
-                      }))
-                    }
-                  />
-                  <span>Recurring payment</span>
-                </label>
               </div>
 
-              {formData.is_recurring && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="label">Recurring Frequency</label>
+              {formData.transaction_type !== 'transfer' && (
+                <div className="space-y-3">
+                  <label className="label">Budget Schedule</label>
+                  {matchingBudgetEntries.length === 0 ? (
+                    <p className="text-sm text-gray-500">No active schedules available for this transaction type.</p>
+                  ) : (
                     <select
-                      value={formData.recurrence_frequency}
-                      onChange={(e) =>
-                        setFormData((prev) => ({
-                          ...prev,
-                          recurrence_frequency: e.target.value as RecurrenceFrequency,
-                        }))
-                      }
-                      className="select-field focus-ring"
+                      className="input-field focus-ring"
+                      value={formData.budget_entry_id ?? ''}
+                      onChange={(event) => {
+                        const value = event.target.value
+                        if (!value) {
+                          handleBudgetEntrySelect(undefined)
+                          return
+                        }
+                        const entryId = Number(value)
+                        const entry = matchingBudgetEntries.find((candidate) => candidate.id === entryId)
+                        handleBudgetEntrySelect(entry ?? undefined)
+                      }}
                     >
-                      {recurrenceOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
+                      <option value="">No schedule</option>
+                      {matchingBudgetEntries.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.name} • {RECURRENCE_LABELS[entry.cadence]} • {formatCurrency(entry.amount, entry.currency)}
                         </option>
                       ))}
                     </select>
-                  </div>
-                  <p className="text-xs text-gray-500 sm:self-end">
-                    Choose how often this transaction repeats. Frequency helps forecast upcoming cash flow.
-                  </p>
+                  )}
+                  {selectedBudgetEntry && (
+                    <div className="rounded-lg bg-indigo-50 p-3 text-xs text-indigo-800 space-y-1">
+                      <p className="font-semibold text-indigo-900">{selectedBudgetEntry.name}</p>
+                      <p>Cadence: {RECURRENCE_LABELS[selectedBudgetEntry.cadence]}</p>
+                      <p>Next due: {formatDateWithOrdinal(new Date(selectedBudgetEntry.next_occurrence))}</p>
+                      <p>Amount: {formatCurrency(selectedBudgetEntry.amount, selectedBudgetEntry.currency)}</p>
+                      {selectedBudgetEntry.is_autopay && <p>Autopay enabled</p>}
+                    </div>
+                  )}
                 </div>
               )}
               

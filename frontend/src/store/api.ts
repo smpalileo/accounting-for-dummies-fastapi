@@ -76,6 +76,7 @@ export interface Transaction {
   account_id: number
   category_id?: number
   allocation_id?: number
+  budget_entry_id?: number
   amount: number
   currency: CurrencyCode
   projected_amount?: number

@@ -1,19 +1,134 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useGetAccountsQuery, useGetTransactionsQuery, useGetGoalsSummaryQuery, useGetTransactionSummaryQuery, useGetCategoriesQuery } from '../store/api'
-import type { Transaction } from '../store/api'
+import { useGetAccountsQuery, useGetTransactionsQuery, useGetCategoriesQuery, useGetBudgetEntriesQuery, useGetAllocationsQuery } from '../store/api'
+import type { Transaction, BudgetEntry, Allocation } from '../store/api'
 import { useState, useEffect, useMemo } from 'react'
 import { Navigation } from '../components/Navigation'
 import { useAuth } from '../contexts/AuthContext'
 import { useCurrency } from '../hooks/useCurrency'
+import { formatCurrency } from '../utils/currency'
+
+const FALLBACK_CATEGORY_COLORS = ['#2563eb', '#7c3aed', '#16a34a', '#f97316', '#db2777']
+
+type ExpenditureInsight = {
+  id: number
+  name: string
+  amount: number
+  transactions: Transaction[]
+  displayColor: string
+  percentage: number
+}
 
 export const Route = createFileRoute('/')({
   component: Dashboard,
 })
 
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+
+const addCadence = (date: Date, cadence: BudgetEntry['cadence']) => {
+  const next = new Date(date.getTime())
+  switch (cadence) {
+    case 'monthly':
+      next.setMonth(next.getMonth() + 1)
+      break
+    case 'quarterly':
+      next.setMonth(next.getMonth() + 3)
+      break
+    case 'semi_annual':
+      next.setMonth(next.getMonth() + 6)
+      break
+    case 'annual':
+      next.setFullYear(next.getFullYear() + 1)
+      break
+    default:
+      break
+  }
+  return next
+}
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date.getTime())
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+const getOrdinalSuffix = (day: number) => {
+  if (day % 100 >= 11 && day % 100 <= 13) {
+    return 'th'
+  }
+  switch (day % 10) {
+    case 1:
+      return 'st'
+    case 2:
+      return 'nd'
+    case 3:
+      return 'rd'
+    default:
+      return 'th'
+  }
+}
+
+const formatDateWithOrdinal = (value: Date) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return 'Unknown date'
+  }
+  const month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date)
+  const day = date.getDate()
+  const year = date.getFullYear()
+  return `${month} ${day}${getOrdinalSuffix(day)}, ${year}`
+}
+
+const generateOccurrencesWithinRange = (
+  entry: BudgetEntry,
+  rangeStart: Date,
+  rangeEnd: Date,
+  maxIterations = 24
+) => {
+  const occurrences: Date[] = []
+  if (!entry.next_occurrence) {
+    return occurrences
+  }
+
+  let occurrence = new Date(entry.next_occurrence)
+  if (Number.isNaN(occurrence.getTime())) {
+    return occurrences
+  }
+
+  const endDateLimit =
+    entry.end_mode === 'on_date' && entry.end_date ? new Date(entry.end_date) : null
+  let occurrencesRemaining =
+    entry.end_mode === 'after_occurrences' && entry.max_occurrences
+      ? entry.max_occurrences
+      : Infinity
+
+  for (let i = 0; i < maxIterations && occurrencesRemaining > 0 && occurrence <= rangeEnd; i++) {
+    if (endDateLimit && occurrence > endDateLimit) {
+      break
+    }
+
+    if (occurrence >= rangeStart && occurrence <= rangeEnd) {
+      occurrences.push(new Date(occurrence))
+    }
+
+    occurrencesRemaining--
+    if (occurrencesRemaining <= 0) {
+      break
+    }
+
+    const nextOccurrence = addCadence(occurrence, entry.cadence)
+    if (nextOccurrence.getTime() === occurrence.getTime()) {
+      break
+    }
+    occurrence = nextOccurrence
+  }
+
+  return occurrences
+}
+
 export function Dashboard() {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
-  const { format } = useCurrency()
+  const { format, currencyCode } = useCurrency()
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -22,8 +137,6 @@ export function Dashboard() {
   }, [isAuthenticated, authLoading, navigate])
 
   const [selectedPeriod, setSelectedPeriod] = useState<'week' | 'month' | 'year'>('month')
-  
-  console.log('Dashboard component rendering...')
   
   const {
     data: accountsData,
@@ -36,36 +149,51 @@ export function Dashboard() {
     error: transactionsError,
   } = useGetTransactionsQuery({ limit: 1000 }, { skip: !isAuthenticated })
   const {
-    data: goalsSummary,
-    isLoading: goalsLoading,
-    error: goalsError,
-  } = useGetGoalsSummaryQuery(undefined, { skip: !isAuthenticated })
-  const {
     data: categoriesData,
     isLoading: categoriesLoading,
     error: categoriesError,
   } = useGetCategoriesQuery({ is_active: true }, { skip: !isAuthenticated })
+  const {
+    data: budgetEntriesData,
+    isLoading: budgetEntriesLoading,
+    error: budgetEntriesError,
+  } = useGetBudgetEntriesQuery({ is_active: true, limit: 200 }, { skip: !isAuthenticated })
+  const {
+    data: allocationsData,
+    isLoading: allocationsLoading,
+    error: allocationsError,
+  } = useGetAllocationsQuery({ limit: 1000, offset: 0 }, { skip: !isAuthenticated })
   
-  console.log('Dashboard hooks called:', { accountsLoading, transactionsLoading, goalsLoading, categoriesLoading })
-
   const accounts = useMemo(() => accountsData?.items ?? [], [accountsData])
   const transactions = useMemo(() => transactionsData?.items ?? [], [transactionsData])
   const categories = categoriesData ?? []
+  const budgetEntries = useMemo(() => budgetEntriesData?.items ?? [], [budgetEntriesData])
+  const allocations = useMemo(() => allocationsData?.items ?? [], [allocationsData])
+  const budgetAllocations = useMemo(
+    () => allocations.filter((allocation) => allocation.allocation_type === 'budget' && allocation.is_active),
+    [allocations]
+  )
 
   // Calculate date range for summary
   const dateRange = useMemo(() => {
     const now = new Date()
-    const startDate = new Date()
+    const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    startDate.setHours(0, 0, 0, 0)
 
     switch (selectedPeriod) {
-      case 'week':
-        startDate.setDate(now.getDate() - 7)
+      case 'week': {
+        startDate.setDate(now.getDate() - 6)
         break
-      case 'month':
-        startDate.setMonth(now.getMonth() - 1)
+      }
+      case 'month': {
+        startDate.setMonth(now.getMonth(), 1)
         break
-      case 'year':
-        startDate.setFullYear(now.getFullYear() - 1)
+      }
+      case 'year': {
+        startDate.setMonth(0, 1)
+        break
+      }
+      default:
         break
     }
 
@@ -75,114 +203,243 @@ export function Dashboard() {
     }
   }, [selectedPeriod])
 
-  const {
-    data: periodSummary,
-    isLoading: summaryLoading,
-    error: summaryError,
-  } = useGetTransactionSummaryQuery(dateRange, { skip: !isAuthenticated })
+  const currentMonthStart = useMemo(() => {
+    const base = new Date()
+    return new Date(base.getFullYear(), base.getMonth(), 1)
+  }, [])
 
-  const allLoading =
-    accountsLoading && transactionsLoading && goalsLoading && categoriesLoading && summaryLoading
+  const currentMonthEnd = useMemo(() => {
+    const base = new Date()
+    return new Date(base.getFullYear(), base.getMonth() + 1, 0, 23, 59, 59, 999)
+  }, [])
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-      </div>
-    )
-  }
-
-  if (!isAuthenticated) {
-    return null // Will redirect
-  }
-
-  // Debug: Log errors
-  if (accountsError) console.error('Accounts error:', accountsError)
-  if (transactionsError) console.error('Transactions error:', transactionsError)
-  if (goalsError) console.error('Goals error:', goalsError)
-  if (categoriesError) console.error('Categories error:', categoriesError)
-  if (summaryError) console.error('Summary error:', summaryError)
-
-  const getErrorDetail = (error: unknown): string | undefined => {
-    if (!error || typeof error !== 'object') {
-      return undefined
-    }
-    const withData = error as { data?: unknown }
-    if (withData.data && typeof withData.data === 'object' && withData.data !== null) {
-      const maybeDetail = (withData.data as { detail?: unknown }).detail
-      if (typeof maybeDetail === 'string') {
-        return maybeDetail
+  const monthTransactionsBySchedule = useMemo(() => {
+    const map = new Map<number, Transaction[]>()
+    transactions.forEach((transaction) => {
+      if (!transaction.budget_entry_id || !transaction.is_posted) {
+        return
       }
+      const txDate = new Date(transaction.transaction_date)
+      if (txDate < currentMonthStart || txDate > currentMonthEnd) {
+        return
+      }
+      const key = transaction.budget_entry_id
+      const existing = map.get(key)
+      if (existing) {
+        existing.push(transaction)
+      } else {
+        map.set(key, [transaction])
+      }
+    })
+    return map
+  }, [transactions, currentMonthStart, currentMonthEnd])
+
+  const scheduleSummaries = useMemo(() => {
+    return budgetEntries
+      .filter((entry) => entry.is_active)
+      .map((entry) => {
+        const occurrences = generateOccurrencesWithinRange(entry, currentMonthStart, currentMonthEnd)
+        const forecastTotal = occurrences.length * entry.amount
+        const actualTransactions = monthTransactionsBySchedule.get(entry.id) ?? []
+        const actualTotal = actualTransactions.reduce((sum, transaction) => sum + transaction.amount, 0)
+        const nextOccurrence =
+          occurrences.length > 0
+            ? occurrences[0]
+            : entry.next_occurrence
+            ? new Date(entry.next_occurrence)
+            : null
+        return {
+          entry,
+          occurrences,
+          forecastTotal,
+          actualTotal,
+          currency: entry.currency,
+          entryType: entry.entry_type,
+          nextOccurrence,
+          actualTransactions,
+        }
+      })
+      .filter((summary) => summary.occurrences.length > 0 || summary.actualTotal > 0)
+  }, [budgetEntries, currentMonthStart, currentMonthEnd, monthTransactionsBySchedule])
+
+  const projectionsSummary = useMemo(() => {
+    const totals = {
+      income: { forecast: 0, actual: 0 },
+      expense: { forecast: 0, actual: 0 },
     }
-    if ('message' in error && typeof (error as { message?: unknown }).message === 'string') {
-      return (error as { message: string }).message
-    }
-    return undefined
-  }
 
-  // Show loading only if ALL are loading
-  if (allLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="loading-spinner mx-auto mb-4"></div>
-          <p className="text-gray-600 font-medium">Loading your financial data...</p>
-        </div>
-      </div>
-    )
-  }
+    scheduleSummaries.forEach((summary) => {
+      if (summary.currency !== currencyCode) {
+        return
+      }
+      if (summary.entryType === 'income') {
+        totals.income.forecast += summary.forecastTotal
+        totals.income.actual += summary.actualTotal
+      } else {
+        totals.expense.forecast += summary.forecastTotal
+        totals.expense.actual += summary.actualTotal
+      }
+    })
 
-  // Show error state if any API call failed
-  if (accountsError || transactionsError || goalsError || categoriesError || summaryError) {
-    return (
-      <div className="flex items-center justify-center min-h-96">
-        <div className="text-center">
-          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Data</h3>
-          <p className="text-gray-600 mb-4">There was an issue loading your financial data.</p>
-          <div className="text-sm text-gray-500 space-y-1">
-            {accountsError && <p>• Accounts: {getErrorDetail(accountsError) ?? 'Failed to load'}</p>}
-            {transactionsError && <p>• Transactions: {getErrorDetail(transactionsError) ?? 'Failed to load'}</p>}
-            {goalsError && <p>• Goals: {getErrorDetail(goalsError) ?? 'Failed to load'}</p>}
-            {categoriesError && <p>• Categories: {getErrorDetail(categoriesError) ?? 'Failed to load'}</p>}
-            {summaryError && <p>• Summary: {getErrorDetail(summaryError) ?? 'Failed to load'}</p>}
-          </div>
-          <button 
-            onClick={() => window.location.reload()} 
-            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    )
-  }
+    return totals
+  }, [scheduleSummaries, currencyCode])
 
-  // Debug: Log data and states
-  console.log('Dashboard states:', { 
-    accountsLoading,
-    transactionsLoading,
-    goalsLoading,
-    categoriesLoading,
-    summaryLoading,
-    accountsError,
-    transactionsError,
-    goalsError,
-    categoriesError,
-    summaryError,
-    accounts: accounts.length,
-    transactions: transactions.length,
-    categories: categories.length,
-    goalsSummary,
-    periodSummary 
-  })
+  const projectedIncome = projectionsSummary.income.forecast
+  const projectedExpenses = projectionsSummary.expense.forecast
+  const projectedNetFlow = projectedIncome - projectedExpenses
+ 
+  const upcomingReminders = useMemo(() => {
+    const start = new Date()
+    const end = addDays(start, 30)
+    const reminders = budgetEntries
+      .filter((entry) => entry.is_active)
+      .flatMap((entry) => {
+        const occurrences = generateOccurrencesWithinRange(entry, start, end)
+        return occurrences.map((occurrence) => {
+          const rawReminder =
+            entry.lead_time_days && entry.lead_time_days > 0
+              ? addDays(occurrence, -entry.lead_time_days)
+              : new Date(occurrence.getTime())
+          const reminderDate = rawReminder < start ? start : rawReminder
+          return {
+            entry,
+            occurrence,
+            reminderDate,
+            daysUntil: Math.max(0, Math.ceil((occurrence.getTime() - start.getTime()) / MS_PER_DAY)),
+          }
+        })
+      })
+      .sort((a, b) => a.occurrence.getTime() - b.occurrence.getTime())
+    return reminders
+  }, [budgetEntries])
 
   const totalBalance = accounts.reduce((sum, account) => sum + account.balance, 0)
-  const activeAccounts = accounts.filter((account) => account.is_active)
+  const { periodIncome, periodExpenses, periodNet } = useMemo(() => {
+    const start = new Date(dateRange.start_date)
+    const end = new Date(dateRange.end_date)
+    let income = 0
+    let expenses = 0
+    transactions.forEach((transaction) => {
+      if (!transaction.is_posted) {
+        return
+      }
+      const txDate = new Date(transaction.transaction_date)
+      if (txDate < start || txDate > end) {
+        return
+      }
+      if (transaction.transaction_type === 'credit') {
+        income += transaction.amount
+      } else if (transaction.transaction_type === 'debit') {
+        expenses += transaction.amount
+      }
+    })
+    return {
+      periodIncome: income,
+      periodExpenses: expenses,
+      periodNet: income - expenses,
+    }
+  }, [transactions, dateRange])
+  const projectedBalanceEnd = totalBalance + (projectedNetFlow - periodNet)
+
+  const showProjections = selectedPeriod !== 'year' && scheduleSummaries.length > 0
+  const projectionPeriodLabel = selectedPeriod === 'week' ? 'week' : 'month'
+  const periodHeadingLabel = selectedPeriod === 'year' ? 'Year to Date' : selectedPeriod === 'month' ? 'Month to Date' : 'Week to Date'
+  const periodTag = selectedPeriod === 'year' ? 'YTD' : selectedPeriod === 'month' ? 'MTD' : 'WTD'
+
+  const upcomingPlannedExpenses = useMemo(() => {
+    const reference = new Date()
+    const targetMonth = reference.getMonth()
+    const targetYear = reference.getFullYear()
+    return upcomingReminders
+      .filter((reminder) => reminder.entry.entry_type === 'expense')
+      .filter((reminder) => {
+        const occurrence = reminder.occurrence
+        return occurrence.getMonth() === targetMonth && occurrence.getFullYear() === targetYear
+      })
+      .slice(0, 6)
+      .map((reminder) => {
+        const entry = reminder.entry
+        const account = entry.account_id ? accounts.find((acc) => acc.id === entry.account_id) : undefined
+        const projectedBalance = account ? account.balance - entry.amount : null
+        let willOverdraw = false
+        if (account) {
+          if (account.account_type === 'credit' && typeof account.credit_limit === 'number' && account.credit_limit > 0) {
+            willOverdraw = account.balance + entry.amount > account.credit_limit
+          } else if (account.account_type !== 'credit' && projectedBalance !== null) {
+            willOverdraw = projectedBalance < 0
+          }
+        }
+        const status: 'danger' | 'autopay' | 'manual' = willOverdraw
+          ? 'danger'
+          : entry.is_autopay
+          ? 'autopay'
+          : 'manual'
+        return {
+          reminder,
+          account,
+          projectedBalance,
+          status,
+        }
+      })
+  }, [upcomingReminders, accounts])
+
+  const budgetEnvelopeSummaries = useMemo(() => {
+    return budgetAllocations
+      .map((allocation) => {
+        const limit = allocation.target_amount ?? allocation.monthly_target ?? 0
+        if (!limit || limit <= 0) {
+          return null
+        }
+        const spent = allocation.current_amount ?? 0
+        const remaining = Math.max(limit - spent, 0)
+        const usagePercentage = Math.min(Math.max((spent / limit) * 100, 0), 100)
+        return {
+          allocation,
+          limit,
+          spent,
+          remaining,
+          usagePercentage,
+        }
+      })
+      .filter((value): value is {
+        allocation: Allocation
+        limit: number
+        spent: number
+        remaining: number
+        usagePercentage: number
+      } => value !== null)
+  }, [budgetAllocations])
+
+  const renderPlannedExpenseIcon = (status: 'danger' | 'autopay' | 'manual') => {
+    if (status === 'danger') {
+      return (
+        <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-100 text-rose-600">
+          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <polygon points="10,1 18,6 18,14 10,19 2,14 2,6" />
+            <rect x="9" y="7" width="2" height="5" fill="white" rx="1" />
+            <rect x="9" y="13" width="2" height="2" fill="white" rx="1" />
+          </svg>
+        </span>
+      )
+    }
+    if (status === 'autopay') {
+      return (
+        <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500 text-white">
+          <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M16.704 5.29a1 1 0 00-1.408-1.42l-6.32 6.263-2.272-2.26a1 1 0 10-1.408 1.419l2.976 2.958a1 1 0 001.408 0l7.024-6.96z" clipRule="evenodd" />
+          </svg>
+        </span>
+      )
+    }
+    return (
+      <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+        <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M10.894 2.553c-.346-.598-1.442-.598-1.788 0l-7 12.092c-.339.586.086 1.355.894 1.355h14c.808 0 1.233-.769.894-1.355l-7-12.092z" />
+          <path d="M9 13h2v2H9v-2zm0-6h2v5H9V7z" fill="white" />
+        </svg>
+      </span>
+    )
+  }
 
   // Helper function to filter transactions by selected period
   const getTransactionsForPeriod = () => {
@@ -195,9 +452,6 @@ export function Dashboard() {
   }
 
   const periodTransactions = getTransactionsForPeriod()
-  const recentTransactions = periodTransactions
-    .sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime())
-    .slice(0, 5)
 
   // Calculate expenditure by category for the selected period
   const getExpenditureByCategory = () => {
@@ -229,12 +483,12 @@ export function Dashboard() {
     return Array.from(categoryTotals.entries())
       .map(([categoryId, total]) => {
         const category = categories.find(cat => cat.id === categoryId)
-        const transactions = categoryTransactions.get(categoryId) || []
+        const transactionsForCategory = categoryTransactions.get(categoryId) || []
         
-        const topTransactions: Transaction[] = [...transactions]
+        const topTransactions: Transaction[] = [...transactionsForCategory]
           .sort((a, b) => b.amount - a.amount)
           .slice(0, 3)
-
+        
         return {
           id: categoryId,
           name: category?.name || 'Unknown',
@@ -248,415 +502,394 @@ export function Dashboard() {
   }
 
   const topExpenditureCategories = getExpenditureByCategory()
+  const totalExpenditureAmount = useMemo(
+    () => topExpenditureCategories.reduce((sum, category) => sum + category.amount, 0),
+    [topExpenditureCategories]
+  )
+  const expenditureInsights = useMemo<ExpenditureInsight[]>(() => {
+    if (topExpenditureCategories.length === 0 || totalExpenditureAmount <= 0) {
+      return []
+    }
+    return topExpenditureCategories.map((category, index) => {
+      const color = category.color && category.color.trim() ? category.color : FALLBACK_CATEGORY_COLORS[index % FALLBACK_CATEGORY_COLORS.length]
+      const percentage = (category.amount / totalExpenditureAmount) * 100
+      return {
+        ...category,
+        displayColor: color,
+        percentage,
+      }
+    })
+  }, [topExpenditureCategories, totalExpenditureAmount])
+  const expenditureChartStyle = useMemo(() => {
+    if (expenditureInsights.length === 0) {
+      return { backgroundImage: 'conic-gradient(#e5e7eb 0% 100%)' }
+    }
+    let cumulative = 0
+    const segments = expenditureInsights.map((item, index) => {
+      const start = cumulative
+      cumulative += item.percentage
+      if (index === expenditureInsights.length - 1 || cumulative > 100) {
+        cumulative = 100
+      }
+      return `${item.displayColor} ${start}% ${cumulative}%`
+    })
+    return { backgroundImage: `conic-gradient(${segments.join(', ')})` }
+  }, [expenditureInsights])
+ 
+  const allLoading =
+    accountsLoading && transactionsLoading && categoriesLoading && budgetEntriesLoading && allocationsLoading
 
-  // Calculate credit card due dates
-  const creditCards = accounts.filter((account) => account.account_type === 'credit' && account.is_active)
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return null // Will redirect
+  }
+
+  // Debug: Log errors
+  if (accountsError) console.error('Accounts error:', accountsError)
+  if (transactionsError) console.error('Transactions error:', transactionsError)
+  if (categoriesError) console.error('Categories error:', categoriesError)
+  if (allocationsError) console.error('Allocations error:', allocationsError)
+
+  const getErrorDetail = (error: unknown): string | undefined => {
+    if (!error || typeof error !== 'object') {
+      return undefined
+    }
+    const withData = error as { data?: unknown }
+    if (withData.data && typeof withData.data === 'object' && withData.data !== null) {
+      const maybeDetail = (withData.data as { detail?: unknown }).detail
+      if (typeof maybeDetail === 'string') {
+        return maybeDetail
+      }
+    }
+    if ('message' in error && typeof (error as { message?: unknown }).message === 'string') {
+      return (error as { message: string }).message
+    }
+    return undefined
+  }
+
+  // Show loading only if ALL are loading
+  if (allLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-96">
+        <div className="text-center">
+          <div className="loading-spinner mx-auto mb-4"></div>
+          <p className="text-gray-600 font-medium">Loading your financial data...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state if any API call failed
+  if (accountsError || transactionsError || categoriesError || budgetEntriesError || allocationsError) {
+    return (
+      <div className="flex items-center justify-center min-h-96">
+        <div className="text-center">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Data</h3>
+          <p className="text-gray-600 mb-4">There was an issue loading your financial data.</p>
+          <div className="text-sm text-gray-500 space-y-1">
+            {accountsError && <p>• Accounts: {getErrorDetail(accountsError) ?? 'Failed to load'}</p>}
+            {transactionsError && <p>• Transactions: {getErrorDetail(transactionsError) ?? 'Failed to load'}</p>}
+            {categoriesError && <p>• Categories: {getErrorDetail(categoriesError) ?? 'Failed to load'}</p>}
+            {budgetEntriesError && <p>• Schedules: {getErrorDetail(budgetEntriesError) ?? 'Failed to load'}</p>}
+            {allocationsError && <p>• Budgets: {getErrorDetail(allocationsError) ?? 'Failed to load'}</p>}
+          </div>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <Navigation />
       <main className="py-8">
         <div className="fade-in">
-          <div className="max-w-7xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Accounting Dashboard</h1>
-        <div className="flex space-x-2">
-          <button
-            onClick={() => setSelectedPeriod('week')}
-            className={`px-4 py-2 rounded-lg ${selectedPeriod === 'week' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-          >
-            Week
-          </button>
-          <button
-            onClick={() => setSelectedPeriod('month')}
-            className={`px-4 py-2 rounded-lg ${selectedPeriod === 'month' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-          >
-            Month
-          </button>
-          <button
-            onClick={() => setSelectedPeriod('year')}
-            className={`px-4 py-2 rounded-lg ${selectedPeriod === 'year' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-          >
-            Year
-          </button>
-        </div>
-      </div>
-      
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="stat-card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="stat-label">Total Balance</p>
-              <p className={`stat-value ${totalBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                {format(totalBalance)}
-              </p>
+          <div className="max-w-7xl mx-auto p-6 space-y-8">
+            <div className="flex justify-between items-center">
+              <h1 className="text-3xl font-bold text-gray-900">Accounting Dashboard</h1>
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => setSelectedPeriod('week')}
+                  className={`px-4 py-2 rounded-lg ${selectedPeriod === 'week' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                  Week
+                </button>
+                <button
+                  onClick={() => setSelectedPeriod('month')}
+                  className={`px-4 py-2 rounded-lg ${selectedPeriod === 'month' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                  Month
+                </button>
+                <button
+                  onClick={() => setSelectedPeriod('year')}
+                  className={`px-4 py-2 rounded-lg ${selectedPeriod === 'year' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                  Year
+                </button>
+              </div>
             </div>
-            <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-              <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-              </svg>
-            </div>
-          </div>
-        </div>
-        
-        <div className="stat-card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="stat-label">Total Income ({selectedPeriod})</p>
-              <p className="stat-value text-green-600">
-                {format(periodSummary?.summary?.total_income || 0)}
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-              <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-            </div>
-          </div>
-        </div>
-        
-        <div className="stat-card">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="stat-label">Total Expenditure ({selectedPeriod})</p>
-              <p className="stat-value text-red-600">
-                {format(periodSummary?.summary?.total_expenses || 0)}
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-              <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-              </svg>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Period Summary */}
-      {periodSummary && (
-        <div className="card mb-8">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-gray-900">Period Summary ({selectedPeriod})</h2>
-              <div className="flex items-center space-x-2 text-sm text-gray-500">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                <span>{new Date(periodSummary.period.start_date).toLocaleDateString()} - {new Date(periodSummary.period.end_date).toLocaleDateString()}</span>
-              </div>
-            </div>
-          </div>
-          <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="text-center p-4 bg-green-50 rounded-lg">
-                <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                  <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
+            <div className="card">
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="text-xl font-semibold text-gray-900">Financial Snapshot</h2>
+                    <p className="text-sm text-gray-600">
+                      {selectedPeriod === 'year'
+                        ? 'Tracking year-to-date performance.'
+                        : 'Comparing actuals with projections for the current period.'}
+                    </p>
+                  </div>
+                  <span className="badge badge-info capitalize">{periodHeadingLabel}</span>
                 </div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Income</p>
-                <p className="text-2xl font-bold text-green-600">{format(periodSummary.summary.total_income)}</p>
               </div>
-              <div className="text-center p-4 bg-red-50 rounded-lg">
-                <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                  <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-                  </svg>
-                </div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Expenses</p>
-                <p className="text-2xl font-bold text-red-600">{format(periodSummary.summary.total_expenses)}</p>
-              </div>
-              <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                  <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                  </svg>
-                </div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Net Flow</p>
-                <p className={`text-2xl font-bold ${periodSummary.summary.net_flow >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {format(periodSummary.summary.net_flow)}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Accounts Overview and Credit Card Due Dates */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-        {/* Accounts Overview */}
-        <div className="card">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-gray-900">Accounts Overview</h2>
-              <span className="badge badge-info">{activeAccounts.length} accounts</span>
-            </div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-3">
-              {activeAccounts.map((account) => (
-                <div key={account.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors duration-200">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      account.account_type === 'checking' ? 'bg-blue-100' :
-                      account.account_type === 'savings' ? 'bg-green-100' :
-                      account.account_type === 'credit' ? 'bg-red-100' :
-                      account.account_type === 'cash' ? 'bg-yellow-100' :
-                      'bg-purple-100'
-                    }`}>
-                      <svg className={`w-5 h-5 ${
-                        account.account_type === 'checking' ? 'text-blue-600' :
-                        account.account_type === 'savings' ? 'text-green-600' :
-                        account.account_type === 'credit' ? 'text-red-600' :
-                        account.account_type === 'cash' ? 'text-yellow-600' :
-                        'text-purple-600'
-                      }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                      </svg>
+              <div className={`p-6 grid gap-6 ${showProjections ? 'lg:grid-cols-2' : 'grid-cols-1'}`}>
+                <div className="space-y-4">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Actual totals ({periodHeadingLabel})
+                  </h3>
+                  <dl className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <dt className="text-gray-500">Total balance</dt>
+                      <dd className="text-lg font-semibold text-gray-900">{format(totalBalance)}</dd>
                     </div>
+                    <div className="flex items-center justify-between">
+                      <dt className="text-gray-500">Total income ({periodTag})</dt>
+                      <dd className="text-lg font-semibold text-emerald-600">{format(periodIncome)}</dd>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <dt className="text-gray-500">Total expenses ({periodTag})</dt>
+                      <dd className="text-lg font-semibold text-rose-600">{format(periodExpenses)}</dd>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <dt className="text-gray-500">Net flow ({periodTag})</dt>
+                      <dd className={`text-lg font-semibold ${periodNet >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        {format(periodNet)}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+                {showProjections && (
+                  <div className="space-y-4">
+                    <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                      Projected end of this {projectionPeriodLabel}
+                    </h3>
+                    <dl className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <dt className="text-gray-500">Projected balance</dt>
+                        <dd className="text-lg font-semibold text-gray-900">{format(projectedBalanceEnd)}</dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt className="text-gray-500">Projected income</dt>
+                        <dd className="text-lg font-semibold text-emerald-600">{format(projectedIncome)}</dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt className="text-gray-500">Projected expenses</dt>
+                        <dd className="text-lg font-semibold text-rose-600">{format(projectedExpenses)}</dd>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <dt className="text-gray-500">Projected net flow</dt>
+                        <dd className={`text-lg font-semibold ${projectedNetFlow >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                          {format(projectedNetFlow)}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className="text-xs text-gray-500">
+                      Net realized so far: <span className={`${periodNet >= 0 ? 'text-emerald-600' : 'text-rose-600'} font-medium`}>{format(periodNet)}</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              <div className="card">
+                <div className="p-6 border-b border-gray-200">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-medium text-gray-900">{account.name}</p>
-                      <p className="text-sm text-gray-500 capitalize">{account.account_type.replace('_', ' ')}</p>
-                      {account.account_type === 'credit' && account.credit_limit && (
-                        <p className="text-xs text-gray-400">Limit: {format(account.credit_limit)}</p>
-                      )}
+                      <h2 className="text-xl font-semibold text-gray-900">Budget Envelope Status</h2>
+                      <p className="text-sm text-gray-600">Current month spending against your envelope limits.</p>
                     </div>
-                  </div>
-                  <div className="text-right">
-                    <span className={`font-bold text-lg ${account.balance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {format(account.balance)}
-                    </span>
-                    {account.account_type === 'credit' && account.credit_limit && (
-                      <div className="w-20 bg-gray-200 rounded-full h-1.5 mt-1">
-                        <div 
-                          className="bg-red-500 h-1.5 rounded-full"
-                          style={{ width: `${Math.min((Math.abs(account.balance) / account.credit_limit) * 100, 100)}%` }}
-                        ></div>
-                      </div>
-                    )}
+                    <span className="badge badge-info">{budgetEnvelopeSummaries.length}</span>
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Credit Card Due Dates */}
-        {creditCards.length > 0 && (
-          <div className="card">
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-gray-900">Credit Card Due Dates</h2>
-                <span className="badge badge-warning">{creditCards.length} cards</span>
-              </div>
-            </div>
-            <div className="p-6">
-              <div className="space-y-3">
-                {creditCards.map((card) => {
-                  const today = new Date()
-                  const dueDate = new Date(today.getFullYear(), today.getMonth(), card.due_date || 1)
-                  const daysUntilDue = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-                  
-                  return (
-                    <div key={card.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors duration-200">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
-                          <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                          </svg>
-                        </div>
-                        <div>
-                          <p className="font-medium text-gray-900">{card.name}</p>
-                          <p className="text-sm text-gray-500">Due: {card.due_date}th of month</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className={`font-bold text-lg ${daysUntilDue <= 7 ? 'text-red-600' : daysUntilDue <= 14 ? 'text-yellow-600' : 'text-green-600'}`}>
-                          {daysUntilDue > 0 ? `${daysUntilDue} days` : 'Overdue'}
-                        </p>
-                        <p className="text-sm text-gray-500">{format(Math.abs(card.balance))}</p>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Top Expenditure Categories with Transactions */}
-      <div className="card mb-8">
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-gray-900">Top Expenditure Categories ({selectedPeriod})</h2>
-            <span className="badge badge-info">{topExpenditureCategories.length} categories</span>
-          </div>
-        </div>
-        <div className="p-6">
-          {topExpenditureCategories.length === 0 ? (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-              </div>
-              <p className="text-gray-500 font-medium">No valid transactions</p>
-              <p className="text-sm text-gray-400 mt-1">Try selecting a different time period</p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {topExpenditureCategories.map((category, index) => {
-                const totalExpenditure = topExpenditureCategories.reduce((sum, cat) => sum + cat.amount, 0)
-                const percentage = (category.amount / totalExpenditure) * 100
-                
-                return (
-                  <div key={category.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-sm transition-shadow duration-200">
-                    {/* Category Header */}
-                    <div className="flex items-center space-x-4 mb-3">
-                      <div className="flex-shrink-0 w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                        <span className="text-sm font-medium text-gray-600">#{index + 1}</span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-1">
-                          <p className="text-sm font-medium text-gray-900 truncate">{category.name}</p>
-                          <p className="text-sm font-bold text-gray-900">{format(category.amount)}</p>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div 
-                            className="h-2 rounded-full transition-all duration-500"
-                            style={{ 
-                              width: `${percentage}%`,
-                              backgroundColor: category.color
-                            }}
-                          ></div>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-1">{percentage.toFixed(1)}% of total expenditure</p>
-                      </div>
-                    </div>
-                    
-                    {/* Transactions */}
-                    {category.transactions.length > 0 && (
-                      <div className="ml-12 space-y-2">
-                        {category.transactions.map((transaction: Transaction) => (
-                          <div key={transaction.id} className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-md">
-                            <div className="flex items-center space-x-2">
-                              <div className="w-2 h-2 bg-gray-400 rounded-full"></div>
-                              <span className="text-sm text-gray-700">{transaction.description}</span>
-                            </div>
-                            <span className="text-sm font-medium text-gray-900">{format(transaction.amount)}</span>
+                <div className="p-6 space-y-5">
+                  {budgetEnvelopeSummaries.length === 0 ? (
+                    <p className="text-sm text-gray-500">No active budget envelopes yet.</p>
+                  ) : (
+                    budgetEnvelopeSummaries.map(({ allocation, limit, spent, remaining, usagePercentage }) => (
+                      <div key={allocation.id} className="space-y-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="font-semibold text-gray-900">{allocation.name}</p>
+                            {allocation.description && (
+                              <p className="text-xs text-gray-500">{allocation.description}</p>
+                            )}
                           </div>
-                        ))}
+                          <div className="text-right">
+                            <p className="text-sm font-semibold text-gray-900">Remaining {format(remaining)}</p>
+                            <p className="text-xs text-gray-500">Limit {format(limit)} • Spent {format(spent)}</p>
+                          </div>
+                        </div>
+                        <BudgetUsageBar usagePercentage={usagePercentage} />
                       </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-
-
-      {/* Goals Progress */}
-      {goalsSummary && goalsSummary.goals.length > 0 && (
-        <div className="card mt-8">
-          <div className="p-6 border-b border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-semibold text-gray-900">Goals Progress</h2>
-                <p className="text-sm text-gray-600">Overall Progress: {goalsSummary.total_progress_percentage.toFixed(1)}%</p>
-              </div>
-              <div className="text-right">
-                <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-bold text-lg">{goalsSummary.total_progress_percentage.toFixed(0)}%</span>
+                    ))
+                  )}
                 </div>
               </div>
-            </div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-4">
-              {goalsSummary.goals.map((goal) => (
-                <div key={goal.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-sm transition-shadow duration-200">
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-medium text-gray-900">{goal.name}</h3>
-                    <span className="badge badge-info">{goal.progress_percentage.toFixed(1)}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
-                    <div 
-                      className="bg-gradient-to-r from-blue-500 to-blue-600 h-3 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(goal.progress_percentage, 100)}%` }}
-                    ></div>
-                  </div>
-                  <div className="flex justify-between text-sm text-gray-600">
-                    <span className="font-medium">{format(goal.current_amount)}</span>
-                    <span>{format(goal.target_amount || 0)}</span>
+
+              <div className="card">
+                <div className="p-6 border-b border-gray-200">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-xl font-semibold text-gray-900">Upcoming Planned Expenses</h2>
+                      <p className="text-sm text-gray-600">Recurring expenses scheduled for the remainder of this month.</p>
+                    </div>
+                    <span className="badge badge-info">{upcomingPlannedExpenses.length}</span>
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Period Transactions */}
-      <div className="card mt-8">
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold text-gray-900">Transactions ({selectedPeriod})</h2>
-            <span className="badge badge-info">{recentTransactions.length} transactions</span>
-          </div>
-        </div>
-        <div className="p-6">
-          {recentTransactions.length === 0 ? (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
-                </svg>
+                {upcomingPlannedExpenses.length === 0 ? (
+                  <div className="p-6 text-sm text-gray-500">No upcoming planned expenses detected.</div>
+                ) : (
+                  <div className="divide-y divide-gray-200">
+                    {upcomingPlannedExpenses.map(({ reminder, account, projectedBalance, status }) => {
+                      const entry = reminder.entry
+                      return (
+                        <div key={`${entry.id}-${reminder.occurrence.toISOString()}`} className="p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                          <div className="flex items-start gap-3">
+                            {renderPlannedExpenseIcon(status)}
+                            <div>
+                              <p className="font-semibold text-gray-900">{entry.name}</p>
+                              <p className="text-sm text-gray-500">
+                                {formatDateWithOrdinal(reminder.occurrence)} • {formatCurrency(entry.amount, entry.currency)}
+                              </p>
+                              <p className="text-xs text-gray-400">
+                                {entry.is_autopay ? 'Autopay enabled' : 'Manual payment required'}
+                                {account ? ` • ${account.name}` : ''}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right space-y-1">
+                            {account && projectedBalance !== null && (
+                              <p className={`text-sm font-semibold ${projectedBalance < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
+                                Balance after: {formatCurrency(projectedBalance, account.currency)}
+                              </p>
+                            )}
+                            <p className="text-xs text-gray-500">
+                              {reminder.daysUntil === 0
+                                ? 'Due today'
+                                : `${reminder.daysUntil} day${reminder.daysUntil === 1 ? '' : 's'} remaining`}
+                            </p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-              <p className="text-gray-500 font-medium">No valid transactions</p>
-              <p className="text-sm text-gray-400 mt-1">Try selecting a different time period</p>
             </div>
-          ) : (
-            <div className="space-y-3">
-              {recentTransactions.map((transaction) => (
-                <div key={transaction.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors duration-200">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                      transaction.transaction_type === 'credit' ? 'bg-green-100' : 'bg-red-100'
-                    }`}>
-                      <svg className={`w-5 h-5 ${
-                        transaction.transaction_type === 'credit' ? 'text-green-600' : 'text-red-600'
-                      }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        {transaction.transaction_type === 'credit' ? (
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                        ) : (
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-                        )}
+
+            <div className="card">
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold text-gray-900">Top Expenditure Categories ({selectedPeriod === 'year' ? 'YTD' : 'Current period'})</h2>
+                  <span className="badge badge-info">{expenditureInsights.length} categories</span>
+                </div>
+              </div>
+              <div className="p-6">
+                {expenditureInsights.length === 0 ? (
+                  <div className="text-center py-8">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                       </svg>
                     </div>
-                    <div>
-                      <p className="font-medium text-gray-900">{transaction.description}</p>
-                      <p className="text-sm text-gray-500">{new Date(transaction.transaction_date).toLocaleDateString()}</p>
+                    <p className="text-gray-500 font-medium">No spending recorded yet.</p>
+                    <p className="text-sm text-gray-400 mt-1">Record expenses to see category insights.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-6 lg:grid-cols-[minmax(0,260px)_minmax(0,1fr)] lg:items-center">
+                    <div className="flex justify-center">
+                      <div className="relative h-52 w-52 rounded-full border border-gray-200 shadow-inner" style={expenditureChartStyle}>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-gray-600">
+                          <span className="text-xs uppercase tracking-wide">Total spend</span>
+                          <span className="text-base font-semibold text-gray-900">{format(totalExpenditureAmount)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead>
+                          <tr className="text-left text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            <th className="py-2">Category</th>
+                            <th className="py-2 text-right">Amount</th>
+                            <th className="py-2 text-right">Share</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {expenditureInsights.map((category, index) => (
+                            <tr key={category.id} className="hover:bg-gray-50">
+                              <td className="py-2 pr-4">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className="h-2.5 w-2.5 rounded-full"
+                                    style={{ backgroundColor: category.displayColor }}
+                                  ></span>
+                                  <span className="font-medium text-gray-900 truncate">
+                                    #{index + 1}&nbsp;{category.name}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-2 text-right font-medium text-gray-900">{format(category.amount)}</td>
+                              <td className="py-2 text-right text-gray-600">{category.percentage.toFixed(1)}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <span className={`font-bold text-lg ${transaction.transaction_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
-                      {transaction.transaction_type === 'credit' ? '+' : '-'}{format(transaction.amount)}
-                    </span>
-                    <p className="text-xs text-gray-400 capitalize">{transaction.transaction_type}</p>
-                  </div>
-                </div>
-              ))}
+                )}
+              </div>
             </div>
-          )}
-        </div>
-      </div>
           </div>
         </div>
       </main>
     </div>
+  )
+}
+
+function BudgetUsageBar({ usagePercentage }: { usagePercentage: number }) {
+  const clampedUsage = Math.min(Math.max(usagePercentage, 0), 100)
+  const remainingColor = clampedUsage >= 100 ? 'bg-gray-200' : clampedUsage >= 80 ? 'bg-amber-200' : 'bg-emerald-200'
+  const usageColor = clampedUsage >= 100 ? 'bg-rose-700' : clampedUsage >= 80 ? 'bg-rose-600' : 'bg-rose-500'
+
+  return (
+    <>
+      <div className={`relative w-full overflow-hidden h-2 rounded-full transition-colors duration-300 ${remainingColor}`}>
+        {clampedUsage > 0 && (
+          <div
+            className={`absolute right-0 top-0 h-full transition-all duration-300 ${usageColor}`}
+            style={{ width: `${clampedUsage}%` }}
+          />
+        )}
+      </div>
+    </>
   )
 }

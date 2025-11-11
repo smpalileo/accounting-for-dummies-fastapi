@@ -1165,21 +1165,7 @@ export function AllocationsPage() {
                   <span className="font-semibold text-rose-600">{format(usedAmount)}</span>
                 </div>
                 {limitAmount !== null && limitAmount > 0 && (
-                  <>
-                    <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                      <div className="h-full bg-green-500 transition-all duration-300">
-                        <div
-                          className={`h-full transition-all duration-300 ${
-                            usagePercentage < 80 ? 'bg-red-500' : usagePercentage < 95 ? 'bg-yellow-400' : 'bg-red-600'
-                          }`}
-                          style={{ width: `${Math.min(usagePercentage, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                    <p className="text-right text-xs font-medium text-gray-500">
-                      {usagePercentage.toFixed(1)}% of limit used
-                    </p>
-                  </>
+                  <BudgetUsageBar usagePercentage={usagePercentage} />
                 )}
                 {limitAmount !== null && (
                   <div className="flex items-center justify-between text-sm text-gray-600">
@@ -1560,18 +1546,8 @@ export function AllocationsPage() {
                     <p className="mt-2 text-sm text-gray-500">
                       Spent <span className="font-semibold text-rose-600">{format(actionAllocation.current_amount)}</span>
                     </p>
-                    {actionAllocationUsagePct !== null && (
-                      <>
-                        <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className="bg-rose-500 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${Math.min(actionAllocationUsagePct, 100)}%` }}
-                          />
-                        </div>
-                        <p className="mt-1 text-xs text-gray-500 text-right">
-                          {actionAllocationUsagePct.toFixed(1)}% of limit used
-                        </p>
-                      </>
+                    {actionAllocationUsagePct !== null && actionAllocationLimit !== null && actionAllocationLimit > 0 && (
+                      <BudgetUsageBar usagePercentage={actionAllocationUsagePct} />
                     )}
                     {actionAllocationRemaining !== null && (
                       <p
@@ -2431,6 +2407,28 @@ export function AllocationsPage() {
         </div>
       )}
     </div>
+  )
+}
+
+const BudgetUsageBar: React.FC<{ usagePercentage: number }> = ({ usagePercentage }) => {
+  const clampedUsage = Math.min(Math.max(usagePercentage, 0), 100)
+  const remainingColor = clampedUsage >= 100 ? 'bg-gray-200' : clampedUsage >= 80 ? 'bg-amber-200' : 'bg-emerald-200'
+  const usageColor = clampedUsage >= 100 ? 'bg-rose-700' : clampedUsage >= 80 ? 'bg-rose-600' : 'bg-rose-500'
+ 
+  return (
+    <>
+      <div className={`relative w-full overflow-hidden h-2 rounded-full transition-colors duration-300 ${remainingColor}`}>
+        {clampedUsage > 0 && (
+          <div
+            className={`absolute right-0 top-0 h-full transition-all duration-300 ${usageColor}`}
+            style={{ width: `${clampedUsage}%` }}
+          />
+        )}
+      </div>
+      <p className="text-right text-xs font-medium text-gray-500">
+        {clampedUsage.toFixed(1)}% of limit used
+      </p>
+    </>
   )
 }
 

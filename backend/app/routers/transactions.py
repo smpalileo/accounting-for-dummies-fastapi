@@ -13,11 +13,103 @@ from app.models.user import User
 from app.models.budget_entry import BudgetEntry
 from app.models.allocation import Allocation, AllocationType
 from app.models.allocation import BudgetPeriodFrequency
-from datetime import datetime
+from datetime import datetime, timedelta
+from calendar import monthrange
 import os
 from app.core.config import settings
 
 router = APIRouter()
+
+
+def _normalize_reference(reference: Optional[datetime]) -> datetime:
+    value = reference or datetime.utcnow()
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+
+def _start_of_period(reference: datetime, frequency: BudgetPeriodFrequency) -> datetime:
+    freq = frequency or BudgetPeriodFrequency.MONTHLY
+    base = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+    if freq == BudgetPeriodFrequency.DAILY:
+        return base
+    if freq == BudgetPeriodFrequency.WEEKLY:
+        return base - timedelta(days=base.weekday())
+    if freq == BudgetPeriodFrequency.MONTHLY:
+        return base.replace(day=1)
+    if freq == BudgetPeriodFrequency.QUARTERLY:
+        quarter = (base.month - 1) // 3
+        month = quarter * 3 + 1
+        return base.replace(month=month, day=1)
+    return base
+
+
+def _add_months(start: datetime, months: int) -> datetime:
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, monthrange(year, month)[1])
+    return start.replace(year=year, month=month, day=day)
+
+
+def _compute_period_end(start: datetime, frequency: BudgetPeriodFrequency) -> datetime:
+    freq = frequency or BudgetPeriodFrequency.MONTHLY
+    if freq == BudgetPeriodFrequency.DAILY:
+        return start + timedelta(days=1)
+    if freq == BudgetPeriodFrequency.WEEKLY:
+        return start + timedelta(weeks=1)
+    if freq == BudgetPeriodFrequency.MONTHLY:
+        return _add_months(start, 1)
+    if freq == BudgetPeriodFrequency.QUARTERLY:
+        return _add_months(start, 3)
+    return start
+
+
+def _compute_previous_start(start: datetime, frequency: BudgetPeriodFrequency) -> datetime:
+    freq = frequency or BudgetPeriodFrequency.MONTHLY
+    if freq == BudgetPeriodFrequency.DAILY:
+        return start - timedelta(days=1)
+    if freq == BudgetPeriodFrequency.WEEKLY:
+        return start - timedelta(weeks=1)
+    if freq == BudgetPeriodFrequency.MONTHLY:
+        return _add_months(start, -1)
+    if freq == BudgetPeriodFrequency.QUARTERLY:
+        return _add_months(start, -3)
+    return start
+
+
+def _ensure_budget_period(allocation: Allocation, reference: Optional[datetime]) -> None:
+    frequency = allocation.period_frequency or BudgetPeriodFrequency.MONTHLY
+    normalized_reference = _normalize_reference(reference)
+
+    period_start = allocation.period_start
+    period_end = allocation.period_end
+    if period_start:
+        period_start = _normalize_reference(period_start)
+    if period_end:
+        period_end = _normalize_reference(period_end)
+
+    period_changed = False
+
+    if period_start is None or period_end is None:
+        period_start = _start_of_period(normalized_reference, frequency)
+        period_end = _compute_period_end(period_start, frequency)
+        period_changed = True
+
+    while normalized_reference >= period_end:
+        period_start = period_end
+        period_end = _compute_period_end(period_start, frequency)
+        period_changed = True
+
+    while normalized_reference < period_start:
+        previous_start = _compute_previous_start(period_start, frequency)
+        period_end = period_start
+        period_start = previous_start
+        period_changed = True
+
+    if period_changed:
+        allocation.current_amount = 0.0
+
+    allocation.period_start = period_start
+    allocation.period_end = period_end
 
 
 def _budget_delta_for_transaction(transaction_type: TransactionType, amount: float) -> float:
@@ -79,13 +171,23 @@ def _get_budget_allocations_for_transaction(
     return allocations
 
 
-def _apply_budget_delta(allocations: List[Allocation], delta: float) -> None:
-    if not delta:
+def _apply_budget_delta(
+    allocations: List[Allocation],
+    delta: float,
+    reference_date: Optional[datetime],
+) -> None:
+    if not allocations or not delta:
         return
+
+    normalized_reference = _normalize_reference(reference_date)
     now = datetime.utcnow()
+
     for allocation in allocations:
+        if allocation.allocation_type != AllocationType.BUDGET:
+            continue
+        _ensure_budget_period(allocation, normalized_reference)
         current = allocation.current_amount or 0.0
-        allocation.current_amount = max(0.0, current + delta)
+        allocation.current_amount = current + delta
         allocation.updated_at = now
 
 @router.get("/", response_model=TransactionListResponse)
@@ -174,11 +276,11 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
             raise HTTPException(status_code=404, detail="Budget entry not found")
         transaction_data["budget_entry_id"] = budget_entry.id
     
-    if transaction.is_recurring:
-        transaction_data["recurrence_frequency"] = (
-            transaction.recurrence_frequency or RecurrenceFrequency.MONTHLY
-        )
+    if budget_entry:
+        transaction_data["is_recurring"] = True
+        transaction_data["recurrence_frequency"] = budget_entry.cadence
     else:
+        transaction_data["is_recurring"] = False
         transaction_data["recurrence_frequency"] = None
     
     primary_account: Optional[Account] = None
@@ -229,17 +331,17 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
     db_transaction = Transaction(**transaction_data)
     db.add(db_transaction)
     
-    if transaction.is_posted:
-        if transaction.transaction_type == TransactionType.CREDIT:
-            primary_account.balance += transaction.amount
-        elif transaction.transaction_type == TransactionType.DEBIT:
-            primary_account.balance -= transaction.amount
-        elif transaction.transaction_type == TransactionType.TRANSFER:
-            transfer_fee = transaction.transfer_fee or 0.0
-            primary_account.balance -= (transaction.amount + transfer_fee)
-            if destination_account:
-                destination_account.balance += transaction.amount
+    if transaction.transaction_type == TransactionType.CREDIT and transaction.is_posted:
+        primary_account.balance += transaction.amount
+    elif transaction.transaction_type == TransactionType.DEBIT and transaction.is_posted:
+        primary_account.balance -= transaction.amount
+    elif transaction.transaction_type == TransactionType.TRANSFER and transaction.is_posted:
+        transfer_fee = transaction.transfer_fee or 0.0
+        primary_account.balance -= (transaction.amount + transfer_fee)
+        if destination_account:
+            destination_account.balance += transaction.amount
 
+    if transaction.is_posted:
         delta = _budget_delta_for_transaction(transaction.transaction_type, transaction.amount)
         if delta:
             budget_allocations = _get_budget_allocations_for_transaction(
@@ -248,7 +350,7 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
                 allocation_id=transaction.allocation_id,
                 category_id=transaction.category_id,
             )
-            _apply_budget_delta(budget_allocations, delta)
+            _apply_budget_delta(budget_allocations, delta, transaction.transaction_date)
     
     db.commit()
     db.refresh(db_transaction)
@@ -330,12 +432,13 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
                 allocation_id=old_allocation_id,
                 category_id=old_category_id,
             )
-            _apply_budget_delta(previous_budget_allocations, -old_budget_delta)
+            _apply_budget_delta(previous_budget_allocations, -old_budget_delta, old_transaction_date)
     
     # Update transaction
     update_data = transaction_update.dict(exclude_unset=True)
     if "budget_entry_id" in update_data:
         new_budget_entry_id = update_data.get("budget_entry_id")
+        budget_entry = None
         if new_budget_entry_id:
             budget_entry = (
                 db.query(BudgetEntry)
@@ -348,14 +451,13 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
             if not budget_entry:
                 raise HTTPException(status_code=404, detail="Budget entry not found")
         setattr(db_transaction, "budget_entry_id", new_budget_entry_id)
+        db_transaction.is_recurring = bool(budget_entry)
+        db_transaction.recurrence_frequency = budget_entry.cadence if budget_entry else None
         update_data.pop("budget_entry_id", None)
 
-    if "is_recurring" in update_data and not update_data["is_recurring"]:
-        update_data["recurrence_frequency"] = None
-    elif update_data.get("is_recurring") and "recurrence_frequency" not in update_data:
-        update_data["recurrence_frequency"] = (
-            db_transaction.recurrence_frequency or RecurrenceFrequency.MONTHLY
-        )
+    update_data.pop("is_recurring", None)
+    update_data.pop("recurrence_frequency", None)
+
     for field, value in update_data.items():
         setattr(db_transaction, field, value)
     
@@ -427,7 +529,7 @@ def update_transaction(transaction_id: int, transaction_update: TransactionUpdat
                 allocation_id=db_transaction.allocation_id,
                 category_id=db_transaction.category_id,
             )
-            _apply_budget_delta(new_budget_allocations, new_budget_delta)
+            _apply_budget_delta(new_budget_allocations, new_budget_delta, db_transaction.transaction_date)
     
     db.commit()
     db.refresh(db_transaction)
@@ -455,12 +557,10 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db), curre
     if db_transaction.is_posted:
         if db_transaction.transaction_type == TransactionType.CREDIT:
             account = db.query(Account).filter(Account.id == db_transaction.account_id).first()
-            if account:
-                account.balance -= db_transaction.amount
+            if account: account.balance -= db_transaction.amount
         elif db_transaction.transaction_type == TransactionType.DEBIT:
             account = db.query(Account).filter(Account.id == db_transaction.account_id).first()
-            if account:
-                account.balance += db_transaction.amount
+            if account: account.balance += db_transaction.amount
         elif db_transaction.transaction_type == TransactionType.TRANSFER:
             if db_transaction.transfer_from_account_id:
                 from_account = db.query(Account).filter(Account.id == db_transaction.transfer_from_account_id).first()
@@ -478,7 +578,7 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db), curre
                 allocation_id=db_transaction.allocation_id,
                 category_id=db_transaction.category_id,
             )
-            _apply_budget_delta(budget_allocations, -budget_delta)
+            _apply_budget_delta(budget_allocations, -budget_delta, db_transaction.transaction_date)
     
     db.delete(db_transaction)
     db.commit()
