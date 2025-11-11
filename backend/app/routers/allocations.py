@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.core.database import get_db
+from app.core.auth import get_current_active_user
 from app.models.allocation import Allocation, AllocationType
 from app.schemas.allocation import AllocationCreate, AllocationResponse, AllocationUpdate, AllocationListResponse
 from app.models.account import Account
+from app.models.user import User
 from datetime import datetime
 
 router = APIRouter()
@@ -12,6 +14,7 @@ router = APIRouter()
 @router.get("/", response_model=AllocationListResponse)
 def get_allocations(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
     account_id: Optional[int] = Query(None, description="Filter by account ID"),
     allocation_type: Optional[str] = Query(None, description="Filter by allocation type"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
@@ -19,7 +22,7 @@ def get_allocations(
     offset: int = Query(0, ge=0),
 ):
     """Get all allocations with optional filtering"""
-    query = db.query(Allocation)
+    query = db.query(Allocation).filter(Allocation.user_id == current_user.id)
     
     if account_id:
         query = query.filter(Allocation.account_id == account_id)
@@ -44,35 +47,68 @@ def get_allocations(
     return {"items": allocations, "total": total, "has_more": has_more}
 
 @router.post("/", response_model=AllocationResponse)
-def create_allocation(allocation: AllocationCreate, db: Session = Depends(get_db)):
+def create_allocation(
+    allocation: AllocationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Create a new allocation"""
     # Verify account exists
-    account = db.query(Account).filter(Account.id == allocation.account_id).first()
+    account = (
+        db.query(Account)
+        .filter(Account.id == allocation.account_id, Account.user_id == current_user.id)
+        .first()
+    )
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     
-    db_allocation = Allocation(**allocation.dict())
+    db_allocation = Allocation(**allocation.dict(), user_id=current_user.id)
     db.add(db_allocation)
     db.commit()
     db.refresh(db_allocation)
     return db_allocation
 
 @router.get("/{allocation_id}", response_model=AllocationResponse)
-def get_allocation(allocation_id: int, db: Session = Depends(get_db)):
+def get_allocation(
+    allocation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Get a specific allocation by ID"""
-    allocation = db.query(Allocation).filter(Allocation.id == allocation_id).first()
+    allocation = (
+        db.query(Allocation)
+        .filter(Allocation.id == allocation_id, Allocation.user_id == current_user.id)
+        .first()
+    )
     if not allocation:
         raise HTTPException(status_code=404, detail="Allocation not found")
     return allocation
 
 @router.put("/{allocation_id}", response_model=AllocationResponse)
-def update_allocation(allocation_id: int, allocation_update: AllocationUpdate, db: Session = Depends(get_db)):
+def update_allocation(
+    allocation_id: int,
+    allocation_update: AllocationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Update an existing allocation"""
-    db_allocation = db.query(Allocation).filter(Allocation.id == allocation_id).first()
+    db_allocation = (
+        db.query(Allocation)
+        .filter(Allocation.id == allocation_id, Allocation.user_id == current_user.id)
+        .first()
+    )
     if not db_allocation:
         raise HTTPException(status_code=404, detail="Allocation not found")
     
     update_data = allocation_update.dict(exclude_unset=True)
+    if "account_id" in update_data and update_data["account_id"] is not None:
+        account = (
+            db.query(Account)
+            .filter(Account.id == update_data["account_id"], Account.user_id == current_user.id)
+            .first()
+        )
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
     for field, value in update_data.items():
         setattr(db_allocation, field, value)
     
@@ -82,9 +118,17 @@ def update_allocation(allocation_id: int, allocation_update: AllocationUpdate, d
     return db_allocation
 
 @router.delete("/{allocation_id}")
-def delete_allocation(allocation_id: int, db: Session = Depends(get_db)):
+def delete_allocation(
+    allocation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Soft delete an allocation (mark as inactive)"""
-    db_allocation = db.query(Allocation).filter(Allocation.id == allocation_id).first()
+    db_allocation = (
+        db.query(Allocation)
+        .filter(Allocation.id == allocation_id, Allocation.user_id == current_user.id)
+        .first()
+    )
     if not db_allocation:
         raise HTTPException(status_code=404, detail="Allocation not found")
     
@@ -94,9 +138,17 @@ def delete_allocation(allocation_id: int, db: Session = Depends(get_db)):
     return {"message": "Allocation deleted successfully"}
 
 @router.get("/{allocation_id}/progress")
-def get_allocation_progress(allocation_id: int, db: Session = Depends(get_db)):
+def get_allocation_progress(
+    allocation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Get progress details for an allocation"""
-    allocation = db.query(Allocation).filter(Allocation.id == allocation_id).first()
+    allocation = (
+        db.query(Allocation)
+        .filter(Allocation.id == allocation_id, Allocation.user_id == current_user.id)
+        .first()
+    )
     if not allocation:
         raise HTTPException(status_code=404, detail="Allocation not found")
     
@@ -137,12 +189,20 @@ def get_allocation_progress(allocation_id: int, db: Session = Depends(get_db)):
     }
 
 @router.get("/summary/goals")
-def get_goals_summary(db: Session = Depends(get_db)):
+def get_goals_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
     """Get summary of all active goals"""
-    goals = db.query(Allocation).filter(
-        Allocation.allocation_type == AllocationType.GOAL,
-        Allocation.is_active == True
-    ).all()
+    goals = (
+        db.query(Allocation)
+        .filter(
+            Allocation.user_id == current_user.id,
+            Allocation.allocation_type == AllocationType.GOAL,
+            Allocation.is_active == True,
+        )
+        .all()
+    )
     
     total_target = sum(goal.target_amount or 0 for goal in goals)
     total_current = sum(goal.current_amount for goal in goals)
