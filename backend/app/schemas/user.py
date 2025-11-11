@@ -40,3 +40,20 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+
+class EmailVerificationRequest(BaseModel):
+    token: str = Field(..., min_length=10)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(..., min_length=10)
+    new_password: str = Field(..., min_length=8, max_length=100)

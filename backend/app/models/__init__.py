@@ -6,6 +6,7 @@ from app.models.transaction import Transaction, TransactionType
 from app.models.category import Category
 from app.models.allocation import Allocation, AllocationType
 from app.models.budget_entry import BudgetEntry, BudgetEntryType
+from app.models.email_token import EmailToken, EmailTokenType
 
 # Update relationships
 Account.transactions = relationship(
@@ -40,6 +41,7 @@ Category.transactions = relationship("Transaction", back_populates="category")
 Allocation.account = relationship("Account", back_populates="allocations")
 Allocation.transactions = relationship("Transaction", back_populates="allocation")
 User.budget_entries = relationship("BudgetEntry", back_populates="user")
+User.email_tokens = relationship("EmailToken", back_populates="user", cascade="all, delete-orphan")
 Account.budget_entries = relationship("BudgetEntry", back_populates="account")
 Category.budget_entries = relationship("BudgetEntry", back_populates="category")
 Allocation.budget_entries = relationship("BudgetEntry", back_populates="allocation")
@@ -53,3 +55,4 @@ BudgetEntry.transactions = relationship(
     back_populates="budget_entry",
     foreign_keys=[Transaction.budget_entry_id],
 )
+EmailToken.user = relationship("User", back_populates="email_tokens")
